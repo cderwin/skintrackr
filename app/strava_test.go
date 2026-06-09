@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStravaClient_performRequest(t *testing.T) {
@@ -289,6 +290,211 @@ func TestStravaClient_GetActivity(t *testing.T) {
 				t.Errorf("expected activity name %q, got %q", tt.expectedName, activity.Name)
 			}
 		})
+	}
+}
+
+func TestBuildGpx_TimestampsAreRelativeToStartTime(t *testing.T) {
+	startTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+
+	streamPoints := []StravaStreamPoint{
+		{Latitude: 37.83, Longitude: -122.26, Altitude: 10.5, Time: 0},
+		{Latitude: 37.84, Longitude: -122.27, Altitude: 11.0, Time: 60},
+		{Latitude: 37.85, Longitude: -122.28, Altitude: 11.5, Time: 120},
+	}
+
+	metadata := GpxMetadata{Name: "Test Run", Type: "Run", Time: startTime}
+
+	gpxDoc, err := buildGpx(streamPoints, metadata)
+	if err != nil {
+		t.Fatalf("buildGpx failed: %v", err)
+	}
+
+	if len(gpxDoc.Tracks) != 1 || len(gpxDoc.Tracks[0].Segments) != 1 {
+		t.Fatal("expected 1 track with 1 segment")
+	}
+
+	points := gpxDoc.Tracks[0].Segments[0].Points
+	if len(points) != 3 {
+		t.Fatalf("expected 3 points, got %d", len(points))
+	}
+
+	cases := []struct {
+		idx      int
+		expected time.Time
+	}{
+		{0, startTime},
+		{1, startTime.Add(60 * time.Second)},
+		{2, startTime.Add(120 * time.Second)},
+	}
+
+	for _, tc := range cases {
+		got := points[tc.idx].Timestamp
+		if !got.Equal(tc.expected) {
+			t.Errorf("point[%d]: expected timestamp %v, got %v", tc.idx, tc.expected, got)
+		}
+	}
+}
+
+func TestBuildGpx_CoordinatesAndElevation(t *testing.T) {
+	startTime := time.Date(2024, 1, 15, 9, 0, 0, 0, time.UTC)
+
+	streamPoints := []StravaStreamPoint{
+		{Latitude: 51.5074, Longitude: -0.1278, Altitude: 25.3, Time: 0},
+		{Latitude: 51.5080, Longitude: -0.1285, Altitude: 28.1, Time: 30},
+	}
+
+	metadata := GpxMetadata{Name: "London Walk", Type: "Walk", Time: startTime}
+
+	gpxDoc, err := buildGpx(streamPoints, metadata)
+	if err != nil {
+		t.Fatalf("buildGpx failed: %v", err)
+	}
+
+	points := gpxDoc.Tracks[0].Segments[0].Points
+
+	if points[0].Latitude != 51.5074 {
+		t.Errorf("expected latitude 51.5074, got %v", points[0].Latitude)
+	}
+	if points[0].Longitude != -0.1278 {
+		t.Errorf("expected longitude -0.1278, got %v", points[0].Longitude)
+	}
+	if points[0].Elevation.Value() != 25.3 {
+		t.Errorf("expected elevation 25.3, got %v", points[0].Elevation.Value())
+	}
+
+	if gpxDoc.Tracks[0].Name != "London Walk" {
+		t.Errorf("expected track name %q, got %q", "London Walk", gpxDoc.Tracks[0].Name)
+	}
+}
+
+const activityJSON = `{
+	"id": 12345,
+	"name": "Morning Run",
+	"type": "Run",
+	"start_date": "2024-01-15T09:00:00Z",
+	"athlete": {"id": 67890}
+}`
+
+const streamsJSON = `[
+	{"type": "latlng",    "data": [[37.83, -122.26], [37.84, -122.27]], "original_size": 2},
+	{"type": "altitude",  "data": [10.5, 11.0],                         "original_size": 2},
+	{"type": "time",      "data": [0, 60],                              "original_size": 2}
+]`
+
+func newMockStravaServer(t *testing.T, activityStatus int, activityBody string, streamsStatus int, streamsBody string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "streams") {
+			w.WriteHeader(streamsStatus)
+			w.Write([]byte(streamsBody))
+		} else {
+			w.WriteHeader(activityStatus)
+			w.Write([]byte(activityBody))
+		}
+	}))
+}
+
+func overrideStravaURLs(t *testing.T, baseURL string) {
+	t.Helper()
+	origActivity := ActivityUrl
+	origStreams := StreamsUrl
+	ActivityUrl = baseURL + "/activities/%s"
+	StreamsUrl = baseURL + "/activities/%s/streams"
+	t.Cleanup(func() {
+		ActivityUrl = origActivity
+		StreamsUrl = origStreams
+	})
+}
+
+func TestStravaClient_ExportActivityGPX_Success(t *testing.T) {
+	server := newMockStravaServer(t, http.StatusOK, activityJSON, http.StatusOK, streamsJSON)
+	defer server.Close()
+	overrideStravaURLs(t, server.URL)
+
+	client := NewStravaClient("test-token")
+	gpxBytes, err := client.ExportActivityGPX("12345")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(gpxBytes) == 0 {
+		t.Fatal("expected non-empty GPX output")
+	}
+
+	gpxStr := string(gpxBytes)
+	if !strings.Contains(gpxStr, "<?xml") {
+		t.Error("expected XML declaration in GPX output")
+	}
+	if !strings.Contains(gpxStr, "Morning Run") {
+		t.Error("expected activity name in GPX output")
+	}
+	if !strings.Contains(gpxStr, "37.83") {
+		t.Error("expected latitude in GPX output")
+	}
+	if !strings.Contains(gpxStr, "-122.26") {
+		t.Error("expected longitude in GPX output")
+	}
+}
+
+func TestStravaClient_ExportActivityGPX_TimestampCorrectness(t *testing.T) {
+	server := newMockStravaServer(t, http.StatusOK, activityJSON, http.StatusOK, streamsJSON)
+	defer server.Close()
+	overrideStravaURLs(t, server.URL)
+
+	client := NewStravaClient("test-token")
+	gpxBytes, err := client.ExportActivityGPX("12345")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// startDate from activityJSON is "2024-01-15T09:00:00Z"
+	// time stream is [0, 60], so timestamps should be 09:00:00 and 09:01:00
+	gpxStr := string(gpxBytes)
+	if !strings.Contains(gpxStr, "2024-01-15T09:00:00Z") {
+		t.Error("expected first trackpoint at 2024-01-15T09:00:00Z (start_date + 0s)")
+	}
+	if !strings.Contains(gpxStr, "2024-01-15T09:01:00Z") {
+		t.Error("expected second trackpoint at 2024-01-15T09:01:00Z (start_date + 60s)")
+	}
+}
+
+func TestStravaClient_ExportActivityGPX_ActivityFetchError(t *testing.T) {
+	server := newMockStravaServer(t, http.StatusNotFound, `{"error":"not found"}`, http.StatusOK, streamsJSON)
+	defer server.Close()
+	overrideStravaURLs(t, server.URL)
+
+	client := NewStravaClient("test-token")
+	_, err := client.ExportActivityGPX("99999")
+	if err == nil {
+		t.Error("expected error when activity fetch fails")
+	}
+}
+
+func TestStravaClient_ExportActivityGPX_StreamFetchError(t *testing.T) {
+	server := newMockStravaServer(t, http.StatusOK, activityJSON, http.StatusInternalServerError, `{"error":"server error"}`)
+	defer server.Close()
+	overrideStravaURLs(t, server.URL)
+
+	client := NewStravaClient("test-token")
+	_, err := client.ExportActivityGPX("12345")
+	if err == nil {
+		t.Error("expected error when stream fetch fails")
+	}
+}
+
+func TestStravaClient_ExportActivityGPX_InvalidStartDate(t *testing.T) {
+	badActivity := `{"id": 12345, "name": "Run", "type": "Run", "start_date": "not-a-date"}`
+	server := newMockStravaServer(t, http.StatusOK, badActivity, http.StatusOK, streamsJSON)
+	defer server.Close()
+	overrideStravaURLs(t, server.URL)
+
+	client := NewStravaClient("test-token")
+	_, err := client.ExportActivityGPX("12345")
+	if err == nil {
+		t.Error("expected error for unparseable start_date")
+	}
+	if !strings.Contains(err.Error(), "parsing activity start date") {
+		t.Errorf("expected parse error message, got: %v", err)
 	}
 }
 

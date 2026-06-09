@@ -93,6 +93,7 @@ func (s *ServerState) RunForever() {
 	e.POST("/token/verify", s.handleTokenVerify)
 	e.POST("/token/revoke", s.handleTokenRevoke)
 	e.GET("/api/strava-token", s.handleStravaToken)
+	e.GET("/api/export-track", s.handleExportTrack)
 
 	slog.Info("Establishing subscriptions in background")
 	go EstablishSubscriptions(&s.config, &s.stravaClient)
