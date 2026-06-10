@@ -120,6 +120,36 @@ func (c *StravaClient) DownloadActivity(activityId string, path string, metadata
 	return err
 }
 
+func (c *StravaClient) ExportActivityGPX(activityId string) ([]byte, error) {
+	activity, err := c.GetActivity(activityId)
+	if err != nil {
+		return nil, err
+	}
+
+	startTime, err := time.Parse(time.RFC3339, activity.StartDate)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing activity start date %q: %w", activity.StartDate, err)
+	}
+
+	streamPoints, err := c.getActivityStream(activityId)
+	if err != nil {
+		return nil, err
+	}
+
+	metadata := GpxMetadata{
+		Name: activity.Name,
+		Type: activity.Type,
+		Time: startTime,
+	}
+
+	gpxDoc, err := buildGpx(streamPoints, metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	return gpxDoc.ToXml(gpx.ToXmlParams{})
+}
+
 func (c *StravaClient) getActivityStream(activityId string) ([]StravaStreamPoint, error) {
 	url := fmt.Sprintf(StreamsUrl, activityId)
 	body, err := c.performRequest("GET", url, nil)
@@ -196,7 +226,7 @@ func buildGpx(StreamPoints []StravaStreamPoint, metadata GpxMetadata) (gpx.GPX, 
 			extension.Nodes = append(extension.Nodes, node)
 		}
 
-		timestamp := time.Unix(int64(streamPoint.Time), int64(streamPoint.Time*1_000_000_000))
+		timestamp := metadata.Time.Add(time.Duration(streamPoint.Time) * time.Second)
 		gpxPoint := gpx.GPXPoint{Point: point, Timestamp: timestamp, Extensions: extension}
 		trackSegment.AppendPoint(&gpxPoint)
 	}
