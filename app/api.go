@@ -15,9 +15,9 @@ func (s *ServerState) handleExportTrack(c echo.Context) error {
 		return err
 	}
 
-	activityId := c.QueryParam("activityId")
+	activityId := c.Param("activityId")
 	if activityId == "" {
-		return echo.NewHTTPError(http.StatusBadRequest, "activityId query parameter is required")
+		return echo.NewHTTPError(http.StatusBadRequest, "activityId path parameter is required")
 	}
 
 	stravaToken, err := s.store.FetchToken(tokenInfo.athleteId)
