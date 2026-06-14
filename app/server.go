@@ -85,7 +85,7 @@ func (s *ServerState) RunForever() {
 	e.GET("/oauth2/connect", s.handleConnect)
 	e.GET("/oauth2/callback", s.handleCallback)
 	e.GET("/subscriptions/callback", s.handleSubscriptionCallback)
-	e.POST("/subscriptions/callback", handlePushEvent)
+	e.POST("/subscriptions/callback", s.handlePushEvent)
 
 	// token generation API
 	e.GET("/token/new", s.handleTokenStart)
