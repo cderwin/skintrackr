@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tkrajina/gpxgo/gpx"
 )
 
 func TestStravaClient_performRequest(t *testing.T) {
@@ -412,9 +414,19 @@ func TestStravaClient_ExportActivityGPX_Success(t *testing.T) {
 	overrideStravaURLs(t, server.URL)
 
 	client := NewStravaClient("test-token")
-	gpxBytes, err := client.ExportActivityGPX("12345")
+	activity, err := client.GetActivity("12345")
+	if err != nil {
+		t.Fatalf("unexpected error fetching activity: %v", err)
+	}
+
+	gpxDoc, err := client.ExportActivityGPX(&activity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpxBytes, err := gpxDoc.ToXml(gpx.ToXmlParams{})
+	if err != nil {
+		t.Fatalf("unexpected error serializing GPX: %v", err)
 	}
 
 	if len(gpxBytes) == 0 {
@@ -442,9 +454,19 @@ func TestStravaClient_ExportActivityGPX_TimestampCorrectness(t *testing.T) {
 	overrideStravaURLs(t, server.URL)
 
 	client := NewStravaClient("test-token")
-	gpxBytes, err := client.ExportActivityGPX("12345")
+	activity, err := client.GetActivity("12345")
+	if err != nil {
+		t.Fatalf("unexpected error fetching activity: %v", err)
+	}
+
+	gpxDoc, err := client.ExportActivityGPX(&activity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	gpxBytes, err := gpxDoc.ToXml(gpx.ToXmlParams{})
+	if err != nil {
+		t.Fatalf("unexpected error serializing GPX: %v", err)
 	}
 
 	// startDate from activityJSON is "2024-01-15T09:00:00Z"
@@ -464,7 +486,7 @@ func TestStravaClient_ExportActivityGPX_ActivityFetchError(t *testing.T) {
 	overrideStravaURLs(t, server.URL)
 
 	client := NewStravaClient("test-token")
-	_, err := client.ExportActivityGPX("99999")
+	_, err := client.GetActivity("99999")
 	if err == nil {
 		t.Error("expected error when activity fetch fails")
 	}
@@ -476,7 +498,12 @@ func TestStravaClient_ExportActivityGPX_StreamFetchError(t *testing.T) {
 	overrideStravaURLs(t, server.URL)
 
 	client := NewStravaClient("test-token")
-	_, err := client.ExportActivityGPX("12345")
+	activity, err := client.GetActivity("12345")
+	if err != nil {
+		t.Fatalf("unexpected error fetching activity: %v", err)
+	}
+
+	_, err = client.ExportActivityGPX(&activity)
 	if err == nil {
 		t.Error("expected error when stream fetch fails")
 	}
@@ -489,7 +516,12 @@ func TestStravaClient_ExportActivityGPX_InvalidStartDate(t *testing.T) {
 	overrideStravaURLs(t, server.URL)
 
 	client := NewStravaClient("test-token")
-	_, err := client.ExportActivityGPX("12345")
+	activity, err := client.GetActivity("12345")
+	if err != nil {
+		t.Fatalf("unexpected error fetching activity: %v", err)
+	}
+
+	_, err = client.ExportActivityGPX(&activity)
 	if err == nil {
 		t.Error("expected error for unparseable start_date")
 	}

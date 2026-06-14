@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -120,20 +121,15 @@ func (c *StravaClient) DownloadActivity(activityId string, path string, metadata
 	return err
 }
 
-func (c *StravaClient) ExportActivityGPX(activityId string) ([]byte, error) {
-	activity, err := c.GetActivity(activityId)
-	if err != nil {
-		return nil, err
-	}
-
+func (c *StravaClient) ExportActivityGPX(activity *StravaActivity) (gpx.GPX, error) {
 	startTime, err := time.Parse(time.RFC3339, activity.StartDate)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing activity start date %q: %w", activity.StartDate, err)
+		return gpx.GPX{}, fmt.Errorf("error parsing activity start date %q: %w", activity.StartDate, err)
 	}
 
-	streamPoints, err := c.getActivityStream(activityId)
+	streamPoints, err := c.getActivityStream(strconv.Itoa(activity.Id))
 	if err != nil {
-		return nil, err
+		return gpx.GPX{}, err
 	}
 
 	metadata := GpxMetadata{
@@ -144,10 +140,10 @@ func (c *StravaClient) ExportActivityGPX(activityId string) ([]byte, error) {
 
 	gpxDoc, err := buildGpx(streamPoints, metadata)
 	if err != nil {
-		return nil, err
+		return gpx.GPX{}, err
 	}
 
-	return gpxDoc.ToXml(gpx.ToXmlParams{})
+	return gpxDoc, nil
 }
 
 func (c *StravaClient) getActivityStream(activityId string) ([]StravaStreamPoint, error) {
