@@ -7,7 +7,36 @@ import (
 	"os"
 )
 
+type BlobStorageConfig struct {
+	BucketName string
+	AccessKeyId string
+	SecretAccessKey string
+	S3ApiEndpoint string
+}
+
+func LoadBlobStorageConfig() BlobStorageConfig {
+	accessKeyId := os.Getenv("AWS_ACCESS_KEY_ID")
+	if accessKeyId == "" {
+		slog.Error("AWS_ACCESS_KEY_ID must be set")
+		panic("invalid configuration")
+	}
+
+	secretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if secretAccessKey == "" {
+		slog.Error("AWS_SECRET_ACCESS_KEY must be set")
+		panic("invalid configuration")
+	}
+
+	return BlobStorageConfig{
+		BucketName: "skintrackr-storage",
+		AccessKeyId: accessKeyId,
+		SecretAccessKey: secretAccessKey,
+		S3ApiEndpoint: "https://t3.storage.dev",
+	}
+}
+
 type Config struct {
+	BlobStorageConfig BlobStorageConfig
 	BaseUrl            string
 	StravaClientId     string
 	StravaClientSecret string
@@ -47,6 +76,7 @@ func LoadConfig() Config {
 		panic("invalid configuration")
 	}
 	return Config{
+		BlobStorageConfig: LoadBlobStorageConfig(),
 		BaseUrl:            baseUrl,
 		StravaClientId:     clientId,
 		StravaClientSecret: clientSecret,

@@ -85,7 +85,7 @@ func (s *ServerState) RunForever() {
 	e.GET("/oauth2/connect", s.handleConnect)
 	e.GET("/oauth2/callback", s.handleCallback)
 	e.GET("/subscriptions/callback", s.handleSubscriptionCallback)
-	e.POST("/subscriptions/callback", handlePushEvent)
+	e.POST("/subscriptions/callback", s.handlePushEvent)
 
 	// token generation API
 	e.GET("/token/new", s.handleTokenStart)
@@ -93,7 +93,8 @@ func (s *ServerState) RunForever() {
 	e.POST("/token/verify", s.handleTokenVerify)
 	e.POST("/token/revoke", s.handleTokenRevoke)
 	e.GET("/api/strava-token", s.handleStravaToken)
-	e.GET("/api/export-track", s.handleExportTrack)
+	e.GET("/api/activity/:activityId/export", s.handleExportTrack)
+	e.POST("/api/activity/:activityId/persist", s.handlePersistActivity)
 
 	slog.Info("Establishing subscriptions in background")
 	go EstablishSubscriptions(&s.config, &s.stravaClient)

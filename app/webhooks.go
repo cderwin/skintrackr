@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/labstack/echo/v4"
 )
@@ -41,12 +42,18 @@ func (s *ServerState) handleSubscriptionCallback(c echo.Context) error {
 	return nil
 }
 
-func handlePushEvent(c echo.Context) error {
+func (s *ServerState) handlePushEvent(c echo.Context) error {
 	var event PushEvent
 	c.Bind(&event)
 	switch event.ObjectType {
 	case "activity":
-		slog.Info("webhook received: activity update", "athlete_id", event.OwnerId, "activity_id", event.ObjectId)
+		slog.Info("webhook received: activity update", "athlete_id", event.OwnerId, "activity_id", event.ObjectId, "aspect_type", event.AspectType)
+		if event.AspectType == "create" || event.AspectType == "update" {
+			// Persist in the background: Strava expects a prompt acknowledgement
+			// and retries the webhook on timeout, whereas PersistActivity makes
+			// several Strava and blob-storage round-trips.
+			go s.persistActivityEvent(event)
+		}
 	case "athlete":
 		slog.Info("webhook received: athlete revoked access", "athlete_id", event.OwnerId)
 	default:
@@ -54,6 +61,29 @@ func handlePushEvent(c echo.Context) error {
 	}
 
 	return nil
+}
+
+// persistActivityEvent fetches the Strava token for the event's owner and
+// persists the referenced activity's metadata and GPX track to blob storage.
+// It is intended to be run in its own goroutine; errors are logged rather than
+// returned since there is no caller to receive them.
+func (s *ServerState) persistActivityEvent(event PushEvent) {
+	activityId := strconv.Itoa(event.ObjectId)
+
+	stravaToken, err := s.store.FetchToken(event.OwnerId)
+	if err != nil {
+		slog.Error("error fetching strava token for activity persist", "athlete_id", event.OwnerId, "activity_id", activityId, "err", err)
+		return
+	}
+
+	client := NewStravaClient(stravaToken)
+	blobStore := BlobStore{config: &s.config, strava: &client}
+	if err := blobStore.PersistActivity(activityId); err != nil {
+		slog.Error("error persisting activity from webhook", "athlete_id", event.OwnerId, "activity_id", activityId, "err", err)
+		return
+	}
+
+	slog.Info("persisted activity from webhook", "athlete_id", event.OwnerId, "activity_id", activityId)
 }
 
 func EstablishSubscriptions(config *Config, client *StravaClient) {
