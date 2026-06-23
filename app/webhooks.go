@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 
+	"github.com/cderwin/skintrackr/app/stores"
 	"github.com/labstack/echo/v4"
 )
 
@@ -70,15 +71,15 @@ func (s *ServerState) handlePushEvent(c echo.Context) error {
 func (s *ServerState) persistActivityEvent(event PushEvent) {
 	activityId := strconv.Itoa(event.ObjectId)
 
-	stravaToken, err := s.store.FetchToken(event.OwnerId)
+	stravaToken, err := s.tokenStore.FetchToken(event.OwnerId)
 	if err != nil {
 		slog.Error("error fetching strava token for activity persist", "athlete_id", event.OwnerId, "activity_id", activityId, "err", err)
 		return
 	}
 
 	client := NewStravaClient(stravaToken)
-	blobStore := BlobStore{config: &s.config, strava: &client}
-	if err := blobStore.PersistActivity(activityId); err != nil {
+	activityStore := stores.NewActivityStore(s.s3Client, &client)
+	if err := activityStore.PersistActivity(activityId); err != nil {
 		slog.Error("error persisting activity from webhook", "athlete_id", event.OwnerId, "activity_id", activityId, "err", err)
 		return
 	}

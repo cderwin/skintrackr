@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,35 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cderwin/skintrackr/app/crypto"
 	"github.com/labstack/echo/v4"
-	"github.com/redis/go-redis/v9"
 )
-
-// mockStore wraps a Store with additional test helpers
-type mockStore struct {
-	Store
-}
-
-// newMockStore creates a new mock store for testing
-// You'll need to provide a real Redis client or use miniredis
-func newMockStore(redisClient *redis.Client) *mockStore {
-	ctx := context.Background()
-	config := &Config{
-		Secret:             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		StravaClientId:     "test-client-id",
-		StravaClientSecret: "test-client-secret",
-	}
-	stravaClient := NewStravaClient("")
-
-	return &mockStore{
-		Store: Store{
-			client:       redisClient,
-			ctx:          ctx,
-			config:       config,
-			stravaClient: &stravaClient,
-		},
-	}
-}
 
 func TestHandleTokenCallback_MissingState(t *testing.T) {
 	e := echo.New()
@@ -93,7 +66,7 @@ func TestHandleTokenVerify_ExpiredToken(t *testing.T) {
 	secret := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 	// Create an expired token
-	expiredToken, _, err := GenerateJWT(12345, secret, -1*time.Hour)
+	expiredToken, _, err := crypto.GenerateJWT(12345, secret, -1*time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate expired token: %v", err)
 	}
@@ -294,13 +267,13 @@ func TestTokenVerify_ExpiresAtCheck(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			token, _, err := GenerateJWT(12345, secret, tt.expirationTime)
+			token, _, err := crypto.GenerateJWT(12345, secret, tt.expirationTime)
 			if err != nil {
 				t.Fatalf("failed to generate token: %v", err)
 			}
 
 			// Verify the token - the JWT library may or may not reject expired tokens
-			claims, err := VerifyJWT(token, secret)
+			claims, err := crypto.VerifyJWT(token, secret)
 
 			if tt.shouldExpire {
 				// For expired tokens, either:

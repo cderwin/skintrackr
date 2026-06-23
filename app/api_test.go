@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cderwin/skintrackr/app/crypto"
 	"github.com/labstack/echo/v4"
 )
 
@@ -44,7 +45,7 @@ func TestHandleExportTrack_InvalidJWT(t *testing.T) {
 }
 
 func TestHandleExportTrack_ExpiredJWT(t *testing.T) {
-	expiredToken, _, err := GenerateJWT(12345, testSecret, -1*time.Hour)
+	expiredToken, _, err := crypto.GenerateJWT(12345, testSecret, -1*time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate expired token: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestHandleExportTrack_ExpiredJWT(t *testing.T) {
 
 func TestHandleExportTrack_WrongSecret(t *testing.T) {
 	// Token signed with a different secret should be rejected.
-	token, _, err := GenerateJWT(12345, testSecret, 1*time.Hour)
+	token, _, err := crypto.GenerateJWT(12345, testSecret, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestHandlePersistActivity_InvalidJWT(t *testing.T) {
 }
 
 func TestHandlePersistActivity_ExpiredJWT(t *testing.T) {
-	expiredToken, _, err := GenerateJWT(12345, testSecret, -1*time.Hour)
+	expiredToken, _, err := crypto.GenerateJWT(12345, testSecret, -1*time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate expired token: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestHandlePersistActivity_ExpiredJWT(t *testing.T) {
 
 func TestHandlePersistActivity_WrongSecret(t *testing.T) {
 	// Token signed with a different secret should be rejected.
-	token, _, err := GenerateJWT(12345, testSecret, 1*time.Hour)
+	token, _, err := crypto.GenerateJWT(12345, testSecret, 1*time.Hour)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}

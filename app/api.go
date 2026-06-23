@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/cderwin/skintrackr/app/stores"
 	"github.com/labstack/echo/v4"
 	"github.com/tkrajina/gpxgo/gpx"
 )
@@ -20,7 +21,7 @@ func (s *ServerState) handleExportTrack(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "activityId path parameter is required")
 	}
 
-	stravaToken, err := s.store.FetchToken(tokenInfo.athleteId)
+	stravaToken, err := s.tokenStore.FetchToken(tokenInfo.athleteId)
 	if err != nil {
 		slog.Error("error fetching strava token for export", "athlete_id", tokenInfo.athleteId, "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch Strava token")
@@ -65,15 +66,15 @@ func (s *ServerState) handlePersistActivity(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "activityId path parameter is required")
 	}
 
-	stravaToken, err := s.store.FetchToken(tokenInfo.athleteId)
+	stravaToken, err := s.tokenStore.FetchToken(tokenInfo.athleteId)
 	if err != nil {
 		slog.Error("error fetching strava token for persist", "athlete_id", tokenInfo.athleteId, "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to fetch Strava token")
 	}
 
 	client := NewStravaClient(stravaToken)
-	blobStore := BlobStore{config: &s.config, strava: &client}
-	if err := blobStore.PersistActivity(activityId); err != nil {
+	activityStore := stores.NewActivityStore(s.s3Client, &client)
+	if err := activityStore.PersistActivity(activityId); err != nil {
 		slog.Error("error persisting activity", "activity_id", activityId, "athlete_id", tokenInfo.athleteId, "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to persist activity")
 	}

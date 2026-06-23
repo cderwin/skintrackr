@@ -6,9 +6,10 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/cderwin/skintrackr/app/clients"
+	"github.com/cderwin/skintrackr/app/stores"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/redis/go-redis/v9"
 )
 
 var (
@@ -18,30 +19,37 @@ var (
 
 type ServerState struct {
 	config       Config
-	store        Store
+	tokenStore   *stores.TokenStore
 	stravaClient StravaClient
+	s3Client     *clients.S3Client
 }
 
 func NewServer() ServerState {
 	config := LoadConfig()
-	redisOptions, err := redis.ParseURL(config.UpstashRedisUrl)
+
+	redisClient, err := clients.NewRedisClient(config.UpstashRedisUrl)
 	if err != nil {
 		slog.Error("Cannot parse redis url", "upstash_redis_url", config.UpstashRedisUrl, "err", err)
 		panic(err)
 	}
-	redisClient := redis.NewClient(redisOptions)
+
+	blobCfg := config.BlobStorageConfig
+	s3Client, err := clients.NewS3Client(blobCfg.S3ApiEndpoint, "auto", blobCfg.AccessKeyId, blobCfg.SecretAccessKey, blobCfg.BucketName)
+	if err != nil {
+		slog.Error("Cannot create s3 client", "err", err)
+		panic(err)
+	}
+
 	// Create a StravaClient without a token for OAuth and API requests
 	stravaClient := NewStravaClient("")
-	ctx := context.Background()
+	refresher := NewStravaTokenRefresher(config.StravaClientId, config.StravaClientSecret)
+	tokenStore := stores.NewTokenStore(redisClient, config.Secret, refresher)
+
 	return ServerState{
-		config: config,
-		store: Store{
-			client:       redisClient,
-			ctx:          ctx,
-			config:       &config,
-			stravaClient: &stravaClient,
-		},
+		config:       config,
+		tokenStore:   tokenStore,
 		stravaClient: stravaClient,
+		s3Client:     s3Client,
 	}
 }
 

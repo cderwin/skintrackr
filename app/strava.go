@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cderwin/skintrackr/app/stores"
 	"github.com/tkrajina/gpxgo/gpx"
 )
 
@@ -144,6 +145,73 @@ func (c *StravaClient) ExportActivityGPX(activity *StravaActivity) (gpx.GPX, err
 	}
 
 	return gpxDoc, nil
+}
+
+// FetchActivityArchive fetches an activity and serializes its metadata (JSON)
+// and GPX track (XML) for storage. It satisfies stores.ActivitySource.
+func (c *StravaClient) FetchActivityArchive(activityId string) (stores.ActivityArchive, error) {
+	activity, err := c.GetActivity(activityId)
+	if err != nil {
+		return stores.ActivityArchive{}, fmt.Errorf("failed to retrieve activity: %w", err)
+	}
+
+	metadata, err := json.Marshal(activity)
+	if err != nil {
+		return stores.ActivityArchive{}, fmt.Errorf("error marshaling activity: %w", err)
+	}
+
+	gpxDoc, err := c.ExportActivityGPX(&activity)
+	if err != nil {
+		return stores.ActivityArchive{}, fmt.Errorf("failed to download activity track: %w", err)
+	}
+
+	track, err := gpxDoc.ToXml(gpx.ToXmlParams{})
+	if err != nil {
+		return stores.ActivityArchive{}, err
+	}
+
+	return stores.ActivityArchive{
+		AthleteId:  activity.Athlete.Id,
+		ActivityId: activity.Id,
+		Metadata:   metadata,
+		Track:      track,
+	}, nil
+}
+
+// StravaTokenRefresher adapts the Strava token-refresh grant to
+// stores.StravaTokenRefresher by binding the OAuth client credentials.
+type StravaTokenRefresher struct {
+	client       StravaClient
+	clientId     string
+	clientSecret string
+}
+
+func NewStravaTokenRefresher(clientId, clientSecret string) *StravaTokenRefresher {
+	return &StravaTokenRefresher{
+		client:       NewStravaClient(""),
+		clientId:     clientId,
+		clientSecret: clientSecret,
+	}
+}
+
+func (r *StravaTokenRefresher) RefreshToken(refreshToken string) (stores.TokenInfo, error) {
+	formData := map[string]string{
+		"client_id":     r.clientId,
+		"client_secret": r.clientSecret,
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+	}
+
+	body, err := r.client.performRequestForm("POST", tokenUrl, formData)
+	if err != nil {
+		return stores.TokenInfo{}, err
+	}
+
+	var token stores.TokenInfo
+	if err := json.NewDecoder(body).Decode(&token); err != nil {
+		return stores.TokenInfo{}, err
+	}
+	return token, nil
 }
 
 func (c *StravaClient) getActivityStream(activityId string) ([]StravaStreamPoint, error) {
