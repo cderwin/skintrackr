@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/cderwin/skintrackr/app/crypto"
+	"github.com/cderwin/skintrackr/app/stores"
 	"github.com/labstack/echo/v4"
 )
 
@@ -25,7 +27,7 @@ type AuthTokenInfo struct {
 // handleTokenStart initiates the OAuth flow
 func (s *ServerState) handleTokenStart(c echo.Context) error {
 	// Generate and save a state token for CSRF protection
-	state, err := s.store.SaveOAuthState()
+	state, err := s.tokenStore.SaveOAuthState()
 	if err != nil {
 		slog.Error("failed to save OAuth state", "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to initiate OAuth flow")
@@ -71,7 +73,7 @@ func (s *ServerState) handleTokenCallback(c echo.Context) error {
 	}
 
 	// Verify the state token (CSRF protection)
-	err := s.store.GetOAuthState(state)
+	err := s.tokenStore.GetOAuthState(state)
 	if err != nil {
 		slog.Error("invalid OAuth state", "err", err)
 		return echo.NewHTTPError(http.StatusForbidden, "Invalid or expired state token")
@@ -87,7 +89,7 @@ func (s *ServerState) handleTokenCallback(c echo.Context) error {
 	slog.Info("Token exchange completed for token API", "athlete_id", token.Athlete.ID, "athlete_username", token.Athlete.Username)
 
 	// Save the Strava token
-	err = s.store.SaveToken(token.Athlete.ID, TokenInfo{
+	err = s.tokenStore.SaveToken(token.Athlete.ID, stores.TokenInfo{
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		ExpiresAt:    token.ExpiresAt,
@@ -98,7 +100,7 @@ func (s *ServerState) handleTokenCallback(c echo.Context) error {
 
 	// Generate JWT with 30-day expiration
 	expirationDuration := 30 * 24 * time.Hour
-	jwtToken, jti, err := GenerateJWT(token.Athlete.ID, s.config.Secret, expirationDuration)
+	jwtToken, jti, err := crypto.GenerateJWT(token.Athlete.ID, s.config.Secret, expirationDuration)
 	if err != nil {
 		slog.Error("failed to generate JWT", "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to generate access token")
@@ -107,7 +109,7 @@ func (s *ServerState) handleTokenCallback(c echo.Context) error {
 	// Store JWT metadata in Redis for revocation tracking
 	issuedAt := time.Now()
 	expiresAt := issuedAt.Add(expirationDuration)
-	err = s.store.SaveJWTToken(jti, token.Athlete.ID, issuedAt, expiresAt)
+	err = s.tokenStore.SaveJWTToken(jti, token.Athlete.ID, issuedAt, expiresAt)
 	if err != nil {
 		slog.Error("failed to save JWT metadata", "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to save token metadata")
@@ -150,14 +152,14 @@ func (s *ServerState) handleTokenRevoke(c echo.Context) error {
 	}
 
 	// Verify the JWT to get the JTI
-	claims, err := VerifyJWT(tokenString, s.config.Secret)
+	claims, err := crypto.VerifyJWT(tokenString, s.config.Secret)
 	if err != nil {
 		slog.Error("JWT verification failed for revocation", "err", err)
 		return echo.NewHTTPError(http.StatusUnauthorized, "Invalid or expired token")
 	}
 
 	// Check if already revoked
-	revoked, err := s.store.IsJWTRevoked(claims.JTI)
+	revoked, err := s.tokenStore.IsJWTRevoked(claims.JTI)
 	if err != nil {
 		slog.Error("failed to check revocation status", "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to check token status")
@@ -167,7 +169,7 @@ func (s *ServerState) handleTokenRevoke(c echo.Context) error {
 	}
 
 	// Revoke the token
-	err = s.store.RevokeJWTToken(claims.JTI)
+	err = s.tokenStore.RevokeJWTToken(claims.JTI)
 	if err != nil {
 		slog.Error("failed to revoke token", "err", err, "jti", claims.JTI)
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to revoke token")
@@ -189,7 +191,7 @@ func (s *ServerState) handleStravaToken(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusUnauthorized, err)
 	}
 
-	stravaToken, err := s.store.fetchTokenInfo(tokenInfo.athleteId)
+	stravaToken, err := s.tokenStore.FetchTokenInfo(tokenInfo.athleteId)
 	if err != nil {
 		slog.Error("error fetching strava token", "ethlete_id", tokenInfo.athleteId, "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, err)
@@ -224,7 +226,7 @@ func (s *ServerState) AuthenticateRequest(request *http.Request) (AuthTokenInfo,
 
 func (s *ServerState) AuthenticateToken(bearerToken string) (AuthTokenInfo, error) {
 	// Verify the JWT
-	claims, err := VerifyJWT(bearerToken, s.config.Secret)
+	claims, err := crypto.VerifyJWT(bearerToken, s.config.Secret)
 	if err != nil {
 		return AuthTokenInfo{}, errors.New("Invalid or expired token")
 	}
@@ -244,7 +246,7 @@ func (s *ServerState) AuthenticateToken(bearerToken string) (AuthTokenInfo, erro
 	}
 
 	// Check if the token has been revoked
-	revoked, err := s.store.IsJWTRevoked(claims.JTI)
+	revoked, err := s.tokenStore.IsJWTRevoked(claims.JTI)
 	if err != nil {
 		slog.Error("error checking revocation status", "err", err)
 		return token, errors.New("failed to verify token revocation status")
