@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
+	"strconv"
 
 	"github.com/labstack/echo/v4"
 )
@@ -54,22 +54,26 @@ func (s *ServerState) handleCallback(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to exchange temporary code with strava")
 	}
 
-	slog.Info("Token exchange completed for oauth2 callback", "athlete_id", token.Athlete.ID, "athlete_username", token.Athlete.Username, "access_token", token.AccessToken)
+	slog.Info("Token exchange completed for oauth2 callback", "athlete_id", token.Athlete.ID, "athlete_username", token.Athlete.Username)
 	err = s.store.SaveToken(token.Athlete.ID, TokenInfo{AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, ExpiresAt: int64(token.ExpiresAt)})
 	if err != nil {
 		slog.Error("failed to save token to redis", "athlete_id", token.Athlete.ID, "err", err)
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to save token to redis")
 	}
 
-	// Display success page with token info
-	html, err := os.ReadFile("/usr/src/static/confirmation.html")
-	if err != nil {
-		slog.Error("cannot load confirmation template", "err", err)
-		return err
-	}
+	// Hand the token to the static confirmation page via the URL fragment,
+	// which browsers never send back to the server
+	return c.Redirect(http.StatusFound, confirmationUrl(token))
+}
 
-	c.HTMLBlob(http.StatusOK, html)
-	return nil
+// confirmationUrl builds the confirmation page URL carrying the Strava token in its fragment
+func confirmationUrl(token *TokenResponse) string {
+	fragment := url.Values{
+		"access_token": {token.AccessToken},
+		"expires_at":   {strconv.FormatInt(token.ExpiresAt, 10)},
+		"athlete_id":   {strconv.Itoa(token.Athlete.ID)},
+	}
+	return "/static/confirmation.html#" + fragment.Encode()
 }
 
 func exchangeCode(code string, config *Config, client *StravaClient) (*TokenResponse, error) {

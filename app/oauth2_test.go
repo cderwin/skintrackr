@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -227,5 +229,33 @@ func TestExchangeCode_FormDataEncoding(t *testing.T) {
 	_, err := exchangeCode("test-code", config, &client)
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestConfirmationUrl(t *testing.T) {
+	token := &TokenResponse{AccessToken: "access/token+xyz", ExpiresAt: 1609459200}
+	token.Athlete.ID = 12345
+
+	got := confirmationUrl(token)
+
+	path, fragment, found := strings.Cut(got, "#")
+	if !found || path != "/static/confirmation.html" {
+		t.Fatalf("expected /static/confirmation.html#..., got %q", got)
+	}
+
+	params, err := url.ParseQuery(fragment)
+	if err != nil {
+		t.Fatalf("failed to parse fragment: %v", err)
+	}
+
+	expected := map[string]string{
+		"access_token": "access/token+xyz",
+		"expires_at":   "1609459200",
+		"athlete_id":   "12345",
+	}
+	for key, want := range expected {
+		if params.Get(key) != want {
+			t.Errorf("expected %s %q, got %q", key, want, params.Get(key))
+		}
 	}
 }
