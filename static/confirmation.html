@@ -188,6 +188,66 @@
             color: #fc4c02;
         }
 
+        .token-section {
+            text-align: left;
+            margin-bottom: 24px;
+            padding: 20px;
+            background: #f1f5f9;
+            border-radius: 16px;
+        }
+
+        .token-section h2 {
+            font-size: 15px;
+            font-weight: 600;
+            color: #0f172a;
+            margin-bottom: 12px;
+        }
+
+        .token-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .token-value {
+            flex: 1;
+            min-width: 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 13px;
+            color: #334155;
+            background: white;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 10px 12px;
+        }
+
+        .token-button {
+            background: white;
+            color: #334155;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 0 14px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .token-button.primary {
+            background: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%);
+            color: white;
+            border: none;
+        }
+
+        .token-meta {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #475569;
+            line-height: 1.5;
+        }
+
+        .token-warning {
+            color: #b45309;
+        }
+
         @media (max-width: 520px) {
             .container {
                 padding: 36px 28px;
@@ -214,10 +274,70 @@
             <div class="feature">Your ski stats are being tracked automatically</div>
             <div class="feature">You're all set for the season!</div>
         </div>
-        
+
+        <div class="token-section" id="token-section" hidden>
+            <h2>Your Strava token</h2>
+            <div class="token-row">
+                <input class="token-value" id="token-value" type="password" readonly aria-label="Strava access token">
+                <button class="token-button" id="token-toggle" type="button">Show</button>
+                <button class="token-button primary" id="token-copy" type="button">Copy</button>
+            </div>
+            <p class="token-meta">
+                <span id="token-expiry"></span><br>
+                <span class="token-warning">Treat this token like a password. It won't be shown again after you leave this page.</span>
+            </p>
+        </div>
+
+        <div class="token-section" id="token-missing" hidden>
+            <p class="token-meta">Your token is no longer shown on this page. <a href="/" style="color: #fc4c02; text-decoration: none; font-weight: 600;">Reconnect</a> to see it again.</p>
+        </div>
+
         <p class="disclaimer">
             You can revoke this app's access at any time by visiting your <a href="https://www.strava.com/settings/apps" target="_blank" style="color: #fc4c02; text-decoration: none; font-weight: 600;">Strava settings</a> page.
         </p>
     </div>
+
+    <script>
+        // The server passes the token in the URL fragment; read it, then clear it from the address bar and history
+        const params = new URLSearchParams(location.hash.slice(1));
+        history.replaceState(null, "", location.pathname);
+
+        const accessToken = params.get("access_token");
+        const expiresAt = Number(params.get("expires_at"));
+
+        if (accessToken) {
+            const input = document.getElementById("token-value");
+            const toggle = document.getElementById("token-toggle");
+            const copy = document.getElementById("token-copy");
+
+            input.value = accessToken;
+            if (expiresAt) {
+                document.getElementById("token-expiry").textContent =
+                    "Expires " + new Date(expiresAt * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+            }
+
+            toggle.addEventListener("click", () => {
+                const hidden = input.type === "password";
+                input.type = hidden ? "text" : "password";
+                toggle.textContent = hidden ? "Hide" : "Show";
+            });
+
+            copy.addEventListener("click", async () => {
+                try {
+                    await navigator.clipboard.writeText(accessToken);
+                    copy.textContent = "Copied!";
+                } catch {
+                    input.type = "text";
+                    input.select();
+                    copy.textContent = "Select & copy";
+                }
+                setTimeout(() => { copy.textContent = "Copy"; }, 2000);
+            });
+
+            document.getElementById("token-section").hidden = false;
+        } else {
+            document.getElementById("token-missing").hidden = false;
+        }
+    </script>
 </body>
 </html>
