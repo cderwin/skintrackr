@@ -1,19 +1,24 @@
-FROM ghcr.io/astral-sh/uv:0.8.22-python3.12-bookworm-slim AS builder
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
+# The skintrackr server, with the frontend (static/) baked in.
+# The image keeps the repo layout under /app (python/, static/).
 
-WORKDIR /usr/src/app
+# --- python: locked dependencies + the project in /app/python/.venv
+FROM ghcr.io/astral-sh/uv:0.8.22-python3.12-bookworm-slim AS python
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
+WORKDIR /app/python
 # dependencies first, so code changes don't reinstall them
-COPY pyproject.toml uv.lock ./
+COPY python/pyproject.toml python/uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
-COPY README.md ./
-COPY skintrackr ./skintrackr
+COPY python/README.md ./
+COPY python/skintrackr ./skintrackr
 RUN uv sync --locked --no-dev --no-editable
 
 
+# --- runtime
 FROM python:3.12-slim-bookworm
-COPY --from=builder /usr/src/app/.venv /usr/src/app/.venv
-COPY static /usr/src/static
-ENV PATH=/usr/src/app/.venv/bin:$PATH \
-    SKINTRACKR_STATIC_DIR=/usr/src/static \
+WORKDIR /app
+COPY --from=python /app/python/.venv /app/python/.venv
+COPY static /app/static
+ENV PATH=/app/python/.venv/bin:$PATH \
+    SKINTRACKR_STATIC_DIR=/app/static \
     PYTHONUNBUFFERED=1
 CMD ["skintrackr", "serve", "--port", "8080"]

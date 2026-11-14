@@ -39,7 +39,7 @@ from skintrackr.server.webhooks import establish_subscriptions, webhook_handlers
 logger = get_logger(__name__)
 
 # the repository's static/ directory
-DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
+DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[3] / "static"
 STRAVA_TIMEOUT = httpx.Timeout(30.0)
 
 

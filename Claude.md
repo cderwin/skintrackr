@@ -6,11 +6,13 @@ This file provides guidelines and context for Claude Code when working on the Sk
 
 **Skintrackr** is a webhook server for Strava activity notifications with OAuth integration and Redis-based token management. It processes Strava webhooks, manages OAuth tokens securely, exports activity data to GPX, and archives activities (metadata + GPX track) to S3-compatible blob storage.
 
-It is a Python 3.12 [uv](https://docs.astral.sh/uv/) project: an async Litestar server, a click CLI, and attrs/cattrs data types. It was originally written in Go; the Go code is gone, but the data it wrote (Redis keys, encrypted tokens, issued JWTs, archived blobs) is still live, so those formats must not change (see "Compatibility" in `README.md`).
+The backend lives in `python/`: a Python 3.12 [uv](https://docs.astral.sh/uv/) project with an async Litestar server, a click CLI, and attrs/cattrs data types. The frontend lives in `static/` (soon a Vue SPA) and is kept separate from the server code; the server serves it at `/static` and as the fallback for every unmatched GET path. It was originally written in Go; the Go code is gone, but the data it wrote (Redis keys, encrypted tokens, issued JWTs, archived blobs) is still live, so those formats must not change (see "Compatibility" in `python/README.md`).
 
 ## Architecture Overview
 
 ### Core Components
+
+Paths below are relative to `python/`.
 
 1. **skintrackr/server/app.py** - `create_app()`: routes, static pages, lifespan (builds `Services`), error handlers
 2. **skintrackr/server/services.py** - `Services` (config, `Store`, `StravaClient`, `BlobStore`) on `app.state`, and tracked background tasks (`spawn`)
@@ -170,11 +172,13 @@ Follow conventional commits:
 
 ### Local Development
 
+Recipes in the root `justfile`; `py-*` recipes run in `python/`, and `test`/`check` aggregate across the repo (and are what CI runs).
+
 ```bash
-just sync          # uv sync (installs dev tools too)
-just serve         # run the server with .env loaded (needs Redis)
-just test          # uv run pytest
-just check         # uv run ty check
+just py-sync       # uv sync (installs dev tools too)
+just py-serve      # run the server with .env loaded (needs Redis)
+just test          # all tests (py-test: uv run pytest)
+just check         # all static checks (py-check: uv run ty check)
 just build         # build the production Docker image
 just dev-up        # docker compose: app + Redis on http://localhost:8080
 just compose-logs  # follow logs
@@ -182,12 +186,12 @@ just dev-down      # stop the stack
 just compose-restart  # restart just the app
 ```
 
-Direct equivalents: `uv run pytest`, `uv run pytest tests/test_api.py -v`, `uv run pytest --cov`
+Direct equivalents, from `python/`: `uv run pytest`, `uv run pytest tests/test_api.py -v`, `uv run pytest --cov`
 (if pytest-cov is installed), `uv run skintrackr serve --port 8080`.
 
 ### Deployment to Fly.io
 
-Pushes to `main` deploy automatically (`.github/workflows/fly-deploy.yml`, `flyctl deploy --remote-only`), building the top-level `Dockerfile`.
+CI (`.github/workflows/ci.yml`) runs `just test` and `just check` on every PR. Pushes to `main` run CI and then deploy (`.github/workflows/fly-deploy.yml`, `flyctl deploy --remote-only`), building the top-level `Dockerfile`, which bakes in `python/` and `static/`.
 
 ```bash
 fly deploy      # deploy by hand
@@ -199,7 +203,7 @@ fly secrets set APP_SECRET=$(openssl rand -hex 32)   # first-time setup; also ST
 
 ### Environment Setup
 
-Required environment variables (see `.env.example` and `README.md`):
+Required environment variables (see `.env.example` and `python/README.md`):
 - `APP_BASE_URL` - Base URL for OAuth callbacks
 - `APP_SECRET` - hex string, at least 32 bytes decoded (`openssl rand -hex 32`)
 - `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` - From Strava API settings
@@ -212,8 +216,8 @@ The blob-storage bucket name and endpoint are defaults in `BlobStorageConfig` in
 
 ### Unit Test Requirements
 
-1. **All new features MUST have unit tests** in `tests/test_<module>.py`
-2. **Never make real network calls** - use the fakes in `tests/conftest.py`: `FakeStrava` (`httpx.MockTransport`), fakeredis, and `FakeBucket` (botocore `Stubber`), plus the `client` fixture (Litestar `TestClient`)
+1. **All new features MUST have unit tests** in `python/tests/test_<module>.py`
+2. **Never make real network calls** - use the fakes in `python/tests/conftest.py`: `FakeStrava` (`httpx.MockTransport`), fakeredis, and `FakeBucket` (botocore `Stubber`), plus the `client` fixture (Litestar `TestClient`)
 3. Use `pytest.mark.parametrize` for multiple scenarios
 4. Critical paths (auth, token management) must be well-tested; keep the Go-produced compatibility fixtures in `tests/test_crypto.py` and `tests/test_gpx.py` passing
 
@@ -293,7 +297,7 @@ async def get_athlete(self) -> Athlete:
 
 ### Adding New HTTP Handlers
 
-1. Add the handler to the most relevant module in `skintrackr/server/` (reuse an existing module rather than creating a new one) and to its `*_handlers` list or router
+1. Add the handler to the most relevant module in `python/skintrackr/server/` (reuse an existing module rather than creating a new one) and to its `*_handlers` list or router
 2. Make sure the list/router is registered in `create_app()` in `server/app.py`
 3. Authenticate with `authenticate_request()` for protected endpoints
 4. Reuse existing `StravaClient`, `Store`, and `BlobStore` methods — do not duplicate their logic in the handler
@@ -303,7 +307,7 @@ Note: every unmatched GET path serves the landing page (SPA fallback), so a new 
 
 ## Troubleshooting
 
-- **Dependencies out of date:** `uv sync` (`uv lock --upgrade` to bump)
+- **Dependencies out of date:** `just py-sync` (`uv lock --upgrade` to bump)
 - **Missing settings:** startup fails with `ConfigError` naming the variable
 - **Docker:** `docker compose down -v && docker compose build --no-cache && docker compose up`
 - **Fly.io:** `fly logs`, `fly secrets list`, `fly config validate`

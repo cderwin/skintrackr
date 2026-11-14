@@ -1,8 +1,8 @@
-# only pyproject.toml, uv.lock, README.md, skintrackr/ and static/ go into the image
+# only what the Dockerfile copies goes into the build context
 *
-!pyproject.toml
-!uv.lock
-!README.md
-!skintrackr/
+!python/pyproject.toml
+!python/uv.lock
+!python/README.md
+!python/skintrackr/
 !static/
 **/__pycache__
