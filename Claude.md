@@ -8,6 +8,10 @@ This file provides guidelines and context for Claude Code when working on the Sk
 
 ## Architecture Overview
 
+### Python Port
+
+`python/` is a feature-compatible Python port (uv project; async Litestar server; click CLI; attrs/cattrs data). It mirrors the layering below: `skintrackr/clients/strava.py` (`StravaClient`), `clients/store.py` (`Store`), `clients/blob_store.py` (`BlobStore`), and `server/` (handlers; `server/auth.py` has `authenticate_request`). Changes to behaviour, routes, Redis keys, encryption or JWT claims must be kept in sync between the Go and Python implementations. Before a PR, run `just py-test` and `just py-check` (`ty`), as well as the Go tests. See `python/README.md`.
+
 ### Core Components
 
 1. **app/server.go** - Main HTTP server setup, routes, and `ServerState` management

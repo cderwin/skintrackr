@@ -32,8 +32,8 @@ go.work.sum
 # .vscode/
 
 # executables
-skintrackr
-strava_debug
+/skintrackr
+/strava_debug
 
 .claude/
 .env

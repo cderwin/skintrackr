@@ -1,0 +1,41 @@
+[project]
+name = "skintrackr"
+version = "0.1.0"
+description = "Strava webhook server: OAuth, encrypted token storage, GPX export and activity archiving"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "attrs>=26.1.0",
+    "boto3>=1.44.3",
+    "cattrs>=26.2.1",
+    "click>=8.5.1",
+    "httpx>=0.28.1",
+    "litestar[standard]>=2.25.0",
+    "pyjwt>=2.15.1",
+    "pynacl>=1.6.2",
+    "redis>=8.1.0",
+]
+
+[project.scripts]
+skintrackr = "skintrackr.cli.main:main"
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "boto3-stubs[s3]>=1.44.3",
+    "fakeredis>=2.40.0",
+    "pytest>=9.2.0",
+    "ty>=0.0.104",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ty.src]
+include = ["skintrackr", "tests"]
