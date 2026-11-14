@@ -1,4 +1,4 @@
-"""Error responses, in Echo's `{"message": "..."}` shape so clients of the Go server keep working."""
+"""Error responses, in Echo's `{"message": "..."}` shape which existing API clients expect."""
 
 from collections.abc import Generator
 from contextlib import contextmanager

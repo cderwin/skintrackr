@@ -1,3 +1,20 @@
+# Install dependencies (including dev tools)
+sync:
+    uv sync
+
+# Run the server locally (needs Redis and the variables in .env)
+serve:
+    uv run --env-file .env skintrackr serve
+
+# Run tests
+test:
+    uv run pytest
+
+# Type check
+check:
+    uv run ty check
+
+# Build the production image (what Fly deploys)
 build:
     docker build . -t skintrackr
 
@@ -25,18 +42,3 @@ dev-up: compose-up
 
 dev-down: compose-down
     @echo "Stack stopped"
-
-# Run tests
-test:
-    go test ./...
-
-# Python port (python/)
-py-test:
-    cd python && uv run pytest
-
-py-check:
-    cd python && uv run ty check
-
-# Production image (what Fly deploys)
-py-build:
-    docker build -f python/Dockerfile -t skintrackr-py .

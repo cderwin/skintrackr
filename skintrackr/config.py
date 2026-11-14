@@ -1,4 +1,4 @@
-"""Configuration from environment variables (the same ones the Go server reads)."""
+"""Configuration from environment variables (see the README)."""
 
 import os
 import secrets
