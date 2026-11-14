@@ -99,9 +99,14 @@ def create_app(
             await http_client.aclose()
             await redis_client.aclose()
 
-    @get("/", include_in_schema=False)
-    async def index() -> File:
-        return File(static_dir / "index.html", content_disposition_type="inline")
+    @get(["/", "/{path:path}"], include_in_schema=False)
+    async def index(path: str = "") -> File:
+        return File(
+            static_dir / "index.html",
+            media_type="text/html",
+            content_disposition_type="inline",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     # logging_config=None keeps the JSON format from skintrackr.logging
     return Litestar(

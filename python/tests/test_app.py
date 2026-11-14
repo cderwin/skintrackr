@@ -2,6 +2,7 @@
 
 import asyncio
 
+import pytest
 from litestar.testing import TestClient
 
 from skintrackr.clients.store import Store
@@ -31,10 +32,20 @@ def test_static_files(client: TestClient) -> None:
     assert "Your Strava token" in response.text
 
 
-def test_unknown_route_uses_echo_error_shape(client: TestClient) -> None:
-    response = client.get("/nope")
-    assert response.status_code == 404
-    assert response.json() == {"message": "Not Found"}
+@pytest.mark.parametrize("path", ["/", "/some/spa/route"])
+def test_get_serves_landing_page_uncached(client: TestClient, path: str) -> None:
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["content-disposition"].startswith("inline")
+    assert response.headers["cache-control"] == "no-cache"
+
+
+def test_unmatched_method_uses_echo_error_shape(client: TestClient) -> None:
+    # every GET path falls back to the landing page, so an unknown POST hits the catch-all's 405
+    response = client.post("/nope")
+    assert response.status_code == 405
+    assert response.json() == {"message": "Method Not Allowed"}
 
 
 def services(config: Config, strava: FakeStrava, bucket: FakeBucket, redis_server) -> Services:
