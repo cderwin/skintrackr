@@ -78,7 +78,13 @@ func (s *ServerState) RunForever() {
 
 	// static files
 	e.Static("/static", "/usr/src/static")
-	e.File("/", "/usr/src/static/index.html")
+	// SPA entry point: the landing page for "/" and any other unmatched GET path
+	serveIndex := func(c echo.Context) error {
+		c.Response().Header().Set("Cache-Control", "no-cache")
+		return c.File("/usr/src/static/index.html")
+	}
+	e.GET("/", serveIndex)
+	e.GET("/*", serveIndex)
 
 	// dynamic routes
 	e.GET("/healthcheck", handleHealthcheck)

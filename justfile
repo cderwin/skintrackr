@@ -29,3 +29,14 @@ dev-down: compose-down
 # Run tests
 test:
     go test ./...
+
+# Python port (python/)
+py-test:
+    cd python && uv run pytest
+
+py-check:
+    cd python && uv run ty check
+
+# Production image (what Fly deploys)
+py-build:
+    docker build -f python/Dockerfile -t skintrackr-py .

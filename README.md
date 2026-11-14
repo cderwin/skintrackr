@@ -10,6 +10,10 @@ A webhook server for Strava activity notifications with OAuth integration and Re
 - GPX export functionality
 - Docker and Docker Compose support for local development
 
+## Python implementation
+
+A feature-compatible Python port (Litestar, click, attrs/cattrs) lives in [`python/`](python/README.md). It shares Redis data, tokens and blob storage with the Go server: run it with `cd python && uv run skintrackr serve`, and test it with `just py-test` and `just py-check`.
+
 ## Quick Start with Docker Compose
 
 The easiest way to run the application locally for end-to-end testing:
