@@ -1,4 +1,4 @@
-# Tasks across python/ (the backend, uv) and Docker. `just` lists recipes.
+# Tasks across python/ (the backend, uv), frontend/ (vite) and Docker. `just` lists recipes.
 
 default:
     @just --list --unsorted
@@ -9,7 +9,7 @@ default:
 test: py-test
 
 # All static checks
-check: py-check
+check: py-check web-typecheck
 
 # --- python (uv)
 
@@ -33,6 +33,30 @@ py-test *args:
 [working-directory('python')]
 py-check:
     uv run ty check
+
+# --- frontend (vite)
+
+[group('frontend')]
+[working-directory('frontend')]
+web-install:
+    npm ci
+
+# Dev server on http://localhost:5173, with hot reload; server routes go to `just py-serve` on :8080
+[group('frontend')]
+[working-directory('frontend')]
+web-dev:
+    npm run dev
+
+# Production build into frontend/dist, which `just py-serve` serves
+[group('frontend')]
+[working-directory('frontend')]
+web-build:
+    npm run build
+
+[group('frontend')]
+[working-directory('frontend')]
+web-typecheck:
+    npm run typecheck
 
 # --- docker
 

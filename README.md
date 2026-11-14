@@ -6,17 +6,18 @@ JWT-authenticated API, GPX export, and activity archiving (metadata + GPX track)
 | Directory | |
 | --- | --- |
 | [`python/`](python/README.md) | The backend: Litestar server and CLI (uv project). Configuration, routes and layout are in its README. |
-| `static/` | The frontend pages the server serves at `/` (every unmatched GET path) and `/static`. |
+| `frontend/` | The frontend: a Vue 3 + Vite + TypeScript SPA. The server serves its build (`frontend/dist`) in production. |
 
 ## Commands
 
 ```sh
 just            # list recipes
 just test       # all tests (python: pytest)
-just check      # all static checks (python: ty)
+just check      # all static checks (python: ty; frontend: vue-tsc)
 just build      # build the production image (Dockerfile)
 just dev-up     # docker compose: the app plus Redis at http://localhost:8080 (just dev-down to stop)
-just py-serve   # run the server directly (needs Redis and .env)
+just py-serve   # run the server directly (needs Redis and .env); serves frontend/dist after `just web-build`
+just web-dev    # frontend dev server with hot reload on :5173 (proxies server routes to py-serve on :8080)
 ```
 
 ## Local setup
@@ -25,6 +26,7 @@ just py-serve   # run the server directly (needs Redis and .env)
 cp .env.example .env   # then set STRAVA_CLIENT_ID/SECRET (https://www.strava.com/settings/api),
                        # APP_SECRET (openssl rand -hex 32) and the AWS_* blob-storage keys
 just py-sync
+just web-install
 just dev-up            # or: run Redis yourself, set UPSTASH_REDIS_URL in .env, and `just py-serve`
 ```
 

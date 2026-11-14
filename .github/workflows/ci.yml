@@ -19,8 +19,15 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: python/uv.lock
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the Dockerfile's frontend stage.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
       # Python version comes from python/.python-version; --locked fails if uv.lock is stale.
       - run: uv sync --locked
         working-directory: python
+      - run: just web-install
       - run: just test
       - run: just check

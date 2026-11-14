@@ -2,7 +2,7 @@
 
 The Python backend: a Strava webhook server with OAuth, encrypted token storage in Redis, a JWT-authenticated
 API, GPX export, and activity archiving (metadata + GPX track) to S3-compatible storage. It also serves the
-frontend in the repository's `static/`.
+production build of the frontend (`../frontend`, a Vue SPA).
 
 Built with Python 3.12 and [uv](https://docs.astral.sh/uv/): [Litestar](https://litestar.dev) (async),
 [click](https://click.palletsprojects.com), [attrs](https://www.attrs.org)/[cattrs](https://catt.rs), httpx,
@@ -32,7 +32,7 @@ Strava; it reads the token from `STRAVA_TOKEN` if `-t` is omitted.
 | `UPSTASH_REDIS_URL` | yes | | Redis URL |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | yes | | Blob storage credentials (bucket `skintrackr-storage` at `https://t3.storage.dev`) |
 | `DEBUG_STRAVA_RESPONSE_BODY` | no | `false` | Save every Strava response body to `.request-debug-*.log` in the working directory |
-| `SKINTRACKR_STATIC_DIR` | no | `../static` (the repository's `static/`) | Pages served at `/` and `/static` |
+| `SKINTRACKR_FRONTEND_DIR` | no | `../frontend/dist` | The frontend build to serve (`just web-build`) |
 
 Missing or invalid settings fail at startup (`ConfigError`).
 
@@ -40,10 +40,11 @@ Missing or invalid settings fail at startup (`ConfigError`).
 
 | Route | Auth | |
 | --- | --- | --- |
-| `GET /`, `GET /static/*` | | Landing and confirmation pages (the repo's `static/`); any other unmatched GET path also gets the landing page, uncached |
+| `GET /assets/*` | | The frontend's hashed bundles, cached for a year (missing ones are 404) |
+| any other `GET` | | A file from the frontend build (e.g. `/favicon.svg`), else its `index.html`, uncached, for the SPA to route |
 | `GET /healthcheck` | | `{"ok": true}` |
 | `GET /oauth2/connect` | | Redirect to Strava to connect an account |
-| `GET /oauth2/callback` | | Store the athlete's tokens; redirect to the confirmation page with the token in the fragment |
+| `GET /oauth2/callback` | | Store the athlete's tokens; redirect to the frontend's `/connected` page with the token in the fragment |
 | `GET /subscriptions/callback` | `hub.verify_token` | Webhook verification: echoes `hub.challenge` |
 | `POST /subscriptions/callback` | | Webhook events; activity `create`/`update` archive the activity in the background |
 | `GET /token/new` | | Start the OAuth flow that issues an API token (with CSRF `state`) |
@@ -74,7 +75,7 @@ skintrackr/
     store.py         Store: every Redis operation (tokens, OAuth state, JWT revocation)
     blob_store.py    BlobStore: every bucket operation, and persist_activity
   server/
-    app.py           create_app(): routes, static files, lifespan, error handlers
+    app.py           create_app(): routes, the frontend build, lifespan, error handlers
     services.py      Services shared by handlers (on app.state), and background tasks
     auth.py          authenticate_request(): bearer token -> AuthTokenInfo
     errors.py        `{"message": ...}` error responses and fail_with()

@@ -6,7 +6,7 @@ This file provides guidelines and context for Claude Code when working on the Sk
 
 **Skintrackr** is a webhook server for Strava activity notifications with OAuth integration and Redis-based token management. It processes Strava webhooks, manages OAuth tokens securely, exports activity data to GPX, and archives activities (metadata + GPX track) to S3-compatible blob storage.
 
-The backend lives in `python/`: a Python 3.12 [uv](https://docs.astral.sh/uv/) project with an async Litestar server, a click CLI, and attrs/cattrs data types. The frontend lives in `static/` (soon a Vue SPA) and is kept separate from the server code; the server serves it at `/static` and as the fallback for every unmatched GET path. It was originally written in Go; the Go code is gone, but the data it wrote (Redis keys, encrypted tokens, issued JWTs, archived blobs) is still live, so those formats must not change (see "Compatibility" in `python/README.md`).
+The backend lives in `python/`: a Python 3.12 [uv](https://docs.astral.sh/uv/) project with an async Litestar server, a click CLI, and attrs/cattrs data types. The frontend lives in `frontend/`: a Vue 3 + Vite + TypeScript SPA (vue-router), kept separate from the server code. The server serves its production build (`frontend/dist`): `/assets/*` with a one-year immutable cache, other build files as-is, and `index.html` (uncached) for every other GET path so the SPA can route it. It was originally written in Go; the Go code is gone, but the data it wrote (Redis keys, encrypted tokens, issued JWTs, archived blobs) is still live, so those formats must not change (see "Compatibility" in `python/README.md`).
 
 ## Architecture Overview
 
@@ -14,7 +14,7 @@ The backend lives in `python/`: a Python 3.12 [uv](https://docs.astral.sh/uv/) p
 
 Paths below are relative to `python/`.
 
-1. **skintrackr/server/app.py** - `create_app()`: routes, static pages, lifespan (builds `Services`), error handlers
+1. **skintrackr/server/app.py** - `create_app()`: routes, serving the frontend build, lifespan (builds `Services`), error handlers
 2. **skintrackr/server/services.py** - `Services` (config, `Store`, `StravaClient`, `BlobStore`) on `app.state`, and tracked background tasks (`spawn`)
 3. **skintrackr/clients/strava.py** - ALL Strava API interactions via `StravaClient`
 4. **skintrackr/clients/store.py** - ALL Redis operations and token management via `Store`
@@ -191,7 +191,7 @@ Direct equivalents, from `python/`: `uv run pytest`, `uv run pytest tests/test_a
 
 ### Deployment to Fly.io
 
-CI (`.github/workflows/ci.yml`) runs `just test` and `just check` on every PR. Pushes to `main` run CI and then deploy (`.github/workflows/fly-deploy.yml`, `flyctl deploy --remote-only`), building the top-level `Dockerfile`, which bakes in `python/` and `static/`.
+CI (`.github/workflows/ci.yml`) runs `just test` and `just check` on every PR. Pushes to `main` run CI and then deploy (`.github/workflows/fly-deploy.yml`, `flyctl deploy --remote-only`), building the top-level `Dockerfile`, which builds the frontend in a Node stage and bakes `frontend/dist` into the Python image.
 
 ```bash
 fly deploy      # deploy by hand
@@ -211,6 +211,20 @@ Required environment variables (see `.env.example` and `python/README.md`):
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` - Keys for the S3-compatible blob store
 
 The blob-storage bucket name and endpoint are defaults in `BlobStorageConfig` in `config.py`.
+
+### Frontend
+
+```bash
+just web-install     # npm ci
+just web-dev         # Vite dev server on :5173 with hot reload; proxies server routes to `just py-serve` on :8080
+just web-build       # production build into frontend/dist (what `just py-serve` serves)
+just web-typecheck   # vue-tsc (part of `just check`)
+```
+
+- Pages are views in `frontend/src/views/`, registered in `frontend/src/router.ts`; shared pieces go in `src/components/` (e.g. `PageCard.vue`), global styles in `src/assets/main.css`
+- Server routes (`/oauth2/...`, `/token/...`, `/api/...`) are plain links or `fetch` calls, not router links; add any new top-level server prefix to the proxy list in `vite.config.ts`
+- The OAuth callback redirects to the `/connected` route (`CONFIRMATION_PAGE` in `server/oauth2.py`); keep the two in sync
+- Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines
 
