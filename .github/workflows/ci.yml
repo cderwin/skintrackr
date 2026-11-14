@@ -1,0 +1,26 @@
+# `just test` and `just check`. Runs on PRs, and is reused by fly-deploy.yml so main only deploys when it passes.
+name: CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Test and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v3
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: python/uv.lock
+      # Python version comes from python/.python-version; --locked fails if uv.lock is stale.
+      - run: uv sync --locked
+        working-directory: python
+      - run: just test
+      - run: just check
