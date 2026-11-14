@@ -15,6 +15,7 @@ import time
 
 from attrs import field, frozen
 from redis.asyncio import Redis
+from redis.typing import EncodableT, FieldT
 
 from skintrackr.clients.strava import StravaClient
 from skintrackr.crypto import TokenClaims, decrypt, encrypt
@@ -29,6 +30,11 @@ _TOKEN_FIELDS = ("access_token", "refresh_token", "expires_at")
 
 class NotFoundError(LookupError):
     """What was asked for isn't stored (or has expired)."""
+
+
+def _text(value: bytes | str) -> str:
+    # the client decodes responses, but redis-py types them as bytes or str
+    return value.decode() if isinstance(value, bytes) else value
 
 
 def _token_key(athlete_id: int) -> str:
@@ -77,8 +83,8 @@ class Store:
             raise NotFoundError(f"no Strava token stored for athlete {athlete_id}")
 
         token = TokenInfo(
-            access_token=decrypt(access_token, self.secret),
-            refresh_token=decrypt(refresh_token, self.secret),
+            access_token=decrypt(_text(access_token), self.secret),
+            refresh_token=decrypt(_text(refresh_token), self.secret),
             expires_at=int(expires_at),
         )
         if token.expires_at < time.time():
@@ -93,7 +99,7 @@ class Store:
 
     async def save_token(self, athlete_id: int, token: TokenInfo) -> None:
         """Store an athlete's Strava tokens, encrypted."""
-        mapping = {
+        mapping: dict[FieldT, EncodableT] = {
             "access_token": encrypt(token.access_token, self.secret),
             "refresh_token": encrypt(token.refresh_token, self.secret),
             "expires_at": str(token.expires_at),
@@ -124,7 +130,7 @@ class Store:
         ttl = claims.expires_at - int(time.time())
         if ttl <= 0:
             raise ValueError("token already expired")
-        mapping = {"athlete_id": claims.athlete_id, "issued_at": claims.issued_at, "expires_at": claims.expires_at}
+        mapping: dict[FieldT, EncodableT] = {"athlete_id": claims.athlete_id, "issued_at": claims.issued_at, "expires_at": claims.expires_at}
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.hset(_jwt_key(claims.jti), mapping=mapping)
             pipe.expire(_jwt_key(claims.jti), ttl)

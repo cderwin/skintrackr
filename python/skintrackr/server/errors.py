@@ -1,6 +1,6 @@
 """Error responses, in Echo's `{"message": "..."}` shape so clients of the Go server keep working."""
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 
 from litestar import Request, Response
@@ -25,7 +25,7 @@ def internal_error_handler(request: Request, exc: Exception) -> Response[dict[st
 
 
 @contextmanager
-def fail_with(message: str, status_code: int = 500, **context: object) -> Iterator[None]:
+def fail_with(message: str, status_code: int = 500, /, **context: object) -> Generator[None]:
     """Turn any error in the block into an HTTP error with `message`, logging the cause with `context`.
 
     HTTPExceptions raised in the block pass through unchanged.

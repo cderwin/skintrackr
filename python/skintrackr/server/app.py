@@ -13,7 +13,7 @@ Routes (all as in the Go server):
 """
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -72,7 +72,7 @@ def create_app(
     static_dir = static_dir or Path(os.environ.get("SKINTRACKR_STATIC_DIR", DEFAULT_STATIC_DIR))
 
     @asynccontextmanager
-    async def lifespan(app: Litestar) -> AsyncIterator[None]:
+    async def lifespan(app: Litestar) -> AsyncGenerator[None]:
         app_config = config or Config.from_env()
         redis_client = redis or Redis.from_url(app_config.redis_url, decode_responses=True)
         http_client = http or httpx.AsyncClient(timeout=STRAVA_TIMEOUT)

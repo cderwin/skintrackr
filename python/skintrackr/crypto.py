@@ -94,14 +94,17 @@ def verify_jwt(token: str, secret: str) -> TokenClaims:
         payload = jwt.decode(token, secret, algorithms=_ACCEPTED_ALGORITHMS)
     except jwt.PyJWTError as e:
         raise InvalidTokenError(str(e)) from e
-    athlete_id, expires_at, jti, issued_at = (payload.get(k) for k in ("athlete_id", "expires_at", "jti", "iat"))
-    if not (_is_int(athlete_id) and _is_int(expires_at) and _is_int(issued_at) and isinstance(jti, str) and jti):
+    athlete_id, expires_at, issued_at = (_int_claim(payload, k) for k in ("athlete_id", "expires_at", "iat"))
+    jti = payload.get("jti")
+    if athlete_id is None or expires_at is None or issued_at is None or not isinstance(jti, str) or not jti:
         raise InvalidTokenError("token is missing required claims")
     return TokenClaims(athlete_id=athlete_id, issued_at=issued_at, expires_at=expires_at, jti=jti)
 
 
-def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
+def _int_claim(payload: dict[str, object], name: str) -> int | None:
+    value = payload.get(name)
+    # bool is an int subclass; never accept it as a number
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def secret_key_from_hex(hex_secret: str) -> bytes:
