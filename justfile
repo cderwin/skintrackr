@@ -36,3 +36,7 @@ py-test:
 
 py-check:
     cd python && uv run ty check
+
+# Production image (what Fly deploys)
+py-build:
+    docker build -f python/Dockerfile -t skintrackr-py .

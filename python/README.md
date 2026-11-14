@@ -20,6 +20,9 @@ uv run pytest                                  # unit tests
 uv run ty check                                # type check
 ```
 
+Production (Fly.io) runs this server from `Dockerfile`, built from the repository root so it can copy
+`static/`: `just py-build` (or `docker build -f python/Dockerfile .`).
+
 `strava-debug` reads the token from `STRAVA_TOKEN` if `-t` is omitted. From the repository root,
 `just py-test` and `just py-check` run the tests and the type check.
 
