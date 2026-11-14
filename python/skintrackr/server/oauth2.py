@@ -1,6 +1,6 @@
 """Connecting a Strava account: `/oauth2/connect` and its callback.
 
-The callback stores the athlete's tokens and hands the access token to the static confirmation page in the
+The callback stores the athlete's tokens and hands the access token to the frontend's confirmation page in the
 URL fragment, which browsers never send back to a server.
 """
 
@@ -20,7 +20,8 @@ from skintrackr.server.services import Services, get_services
 logger = get_logger(__name__)
 
 CALLBACK_PATH = "oauth2/callback"
-CONFIRMATION_PAGE = "/static/confirmation.html"
+# the frontend's confirmation page (an SPA route)
+CONFIRMATION_PAGE = "/connected"
 
 
 def confirmation_url(token: TokenResponse) -> str:

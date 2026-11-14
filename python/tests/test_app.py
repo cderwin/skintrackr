@@ -1,4 +1,4 @@
-"""App-wide behaviour: health, static pages, error shape, startup."""
+"""App-wide behaviour: health, serving the frontend, error shape, startup."""
 
 import asyncio
 
@@ -8,10 +8,10 @@ from litestar.testing import TestClient
 from skintrackr.clients.store import Store
 from skintrackr.clients.strava import StravaClient
 from skintrackr.config import Config
-from skintrackr.server.app import DEFAULT_STATIC_DIR, create_app
+from skintrackr.server.app import create_app
 from skintrackr.server.services import Services
 from skintrackr.server.webhooks import establish_subscriptions
-from tests.conftest import FakeBucket, FakeStrava, fake_redis, wait_for_background
+from tests.conftest import ASSET_PATH, INDEX_HTML, FakeBucket, FakeStrava, fake_redis, wait_for_background
 
 
 def test_healthcheck(client: TestClient) -> None:
@@ -20,29 +20,36 @@ def test_healthcheck(client: TestClient) -> None:
     assert response.json() == {"ok": True}
 
 
-def test_index_page(client: TestClient) -> None:
-    response = client.get("/")
-    assert response.status_code == 200
-    assert response.text == (DEFAULT_STATIC_DIR / "index.html").read_text()
-
-
-def test_static_files(client: TestClient) -> None:
-    response = client.get("/static/confirmation.html")
-    assert response.status_code == 200
-    assert "Your Strava token" in response.text
-
-
-@pytest.mark.parametrize("path", ["/", "/some/spa/route"])
-def test_get_serves_landing_page_uncached(client: TestClient, path: str) -> None:
+@pytest.mark.parametrize("path", ["/", "/connected", "/some/spa/route", "/assets-like", "/../secret.txt"])
+def test_other_paths_get_the_spa_index_uncached(client: TestClient, path: str) -> None:
     response = client.get(path)
     assert response.status_code == 200
+    assert response.text == INDEX_HTML
     assert response.headers["content-type"].startswith("text/html")
     assert response.headers["content-disposition"].startswith("inline")
     assert response.headers["cache-control"] == "no-cache"
 
 
+def test_serves_files_from_the_build(client: TestClient) -> None:
+    response = client.get("/favicon.svg")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert response.headers["content-disposition"].startswith("inline")
+
+
+def test_assets_are_cached_for_good(client: TestClient) -> None:
+    response = client.get(f"/{ASSET_PATH}")
+    assert response.status_code == 200
+    assert response.text == "console.log('app')"
+    assert "immutable" in response.headers["cache-control"]
+
+
+def test_missing_asset_is_404_not_the_index(client: TestClient) -> None:
+    assert client.get("/assets/gone-123.js").status_code == 404
+
+
 def test_unmatched_method_uses_echo_error_shape(client: TestClient) -> None:
-    # every GET path falls back to the landing page, so an unknown POST hits the catch-all's 405
+    # every GET path falls back to the SPA index, so an unknown POST hits the catch-all's 405
     response = client.post("/nope")
     assert response.status_code == 405
     assert response.json() == {"message": "Method Not Allowed"}

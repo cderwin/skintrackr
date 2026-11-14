@@ -34,7 +34,7 @@ def test_callback_saves_token_and_shows_it(client: TestClient, strava: FakeStrav
 
     assert response.status_code == 302
     assert response.headers["location"] == (
-        f"/static/confirmation.html#access_token=access&athlete_id={ATHLETE_ID}&expires_at=1900000000"
+        f"/connected#access_token=access&athlete_id={ATHLETE_ID}&expires_at=1900000000"
     )
     assert "code=the-code" in strava.requests[0].content.decode()
     stored = with_store(redis_server, lambda s: s.fetch_token_info(ATHLETE_ID))
@@ -58,4 +58,4 @@ def test_confirmation_url_escapes_values() -> None:
     token = TokenResponse(
         access_token="a b&c", refresh_token="r", expires_at=5, athlete=TokenAthlete(id=7, username="x")
     )
-    assert confirmation_url(token) == "/static/confirmation.html#access_token=a+b%26c&athlete_id=7&expires_at=5"
+    assert confirmation_url(token) == "/connected#access_token=a+b%26c&athlete_id=7&expires_at=5"

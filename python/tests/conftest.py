@@ -5,6 +5,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import boto3
@@ -20,7 +21,7 @@ from skintrackr.clients.strava import StravaClient
 from skintrackr.config import BlobStorageConfig, Config
 from skintrackr.crypto import generate_jwt
 from skintrackr.models import TokenInfo
-from skintrackr.server.app import DEFAULT_STATIC_DIR, create_app
+from skintrackr.server.app import create_app
 from skintrackr.server.services import Services
 
 SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -195,15 +196,33 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+INDEX_HTML = "<!DOCTYPE html><title>skintrackr</title><div id=app></div>"
+ASSET_PATH = "assets/index-abc123.js"
+
+
 @pytest.fixture
-def client(config: Config, redis_server: FakeServer, strava: FakeStrava, bucket: FakeBucket) -> Iterator[TestClient]:
+def frontend_dir(tmp_path: Path) -> Path:
+    """A stand-in for the frontend build (frontend/dist), so the tests don't need one."""
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(INDEX_HTML)
+    (dist / "favicon.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
+    (dist / ASSET_PATH).write_text("console.log('app')")
+    (tmp_path / "secret.txt").write_text("outside the build")
+    return dist
+
+
+@pytest.fixture
+def client(
+    config: Config, redis_server: FakeServer, strava: FakeStrava, bucket: FakeBucket, frontend_dir: Path
+) -> Iterator[TestClient]:
     """A test client for an app wired to the fakes (no webhook subscription at startup)."""
     app = create_app(
         config,
         redis=fake_redis(redis_server),
         http=strava.http(),
         blob_store=bucket.store,
-        static_dir=DEFAULT_STATIC_DIR,
+        frontend_dir=frontend_dir,
         subscribe=False,
     )
     with TestClient(app) as client:

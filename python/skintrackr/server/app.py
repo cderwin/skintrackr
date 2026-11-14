@@ -1,10 +1,11 @@
-"""The Litestar app: routes, static pages, startup and shutdown.
+"""The Litestar app: routes, the frontend, startup and shutdown.
 
 Routes:
 
 | Route | |
 | --- | --- |
-| `GET /`, `GET /static/*` | landing and confirmation pages; any other unmatched GET path also gets the landing page |
+| `GET /assets/*` | the frontend's hashed bundles (cached for a year) |
+| any other `GET` | a file from the frontend build, else its `index.html` (the SPA routes the path) |
 | `GET /healthcheck` | `{"ok": true}` |
 | `GET /oauth2/connect`, `GET /oauth2/callback` | connect a Strava account (`oauth2.py`) |
 | `GET/POST /subscriptions/callback` | Strava webhooks (`webhooks.py`) |
@@ -18,7 +19,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from litestar import Litestar, get
+from litestar import Litestar, Request, get
+from litestar.datastructures import CacheControlHeader
 from litestar.exceptions import HTTPException
 from litestar.response import File
 from litestar.static_files import create_static_files_router
@@ -38,8 +40,10 @@ from skintrackr.server.webhooks import establish_subscriptions, webhook_handlers
 
 logger = get_logger(__name__)
 
-# the repository's static/ directory
-DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[3] / "static"
+# the frontend's production build (`just web-build`)
+DEFAULT_FRONTEND_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+# Vite names bundles under assets/ by content hash, so they never change
+ASSETS_CACHE_CONTROL = CacheControlHeader(max_age=365 * 24 * 3600, public=True, immutable=True)
 STRAVA_TIMEOUT = httpx.Timeout(30.0)
 
 
@@ -55,7 +59,7 @@ def create_app(
     redis: Redis | None = None,
     http: httpx.AsyncClient | None = None,
     blob_store: BlobStore | None = None,
-    static_dir: Path | None = None,
+    frontend_dir: Path | None = None,
     subscribe: bool = True,
 ) -> Litestar:
     """Build the app. Anything not passed is built from the environment at startup.
@@ -65,11 +69,11 @@ def create_app(
         redis: Redis client (with `decode_responses=True`); connects to `config.redis_url` if omitted.
         http: HTTP client for Strava requests.
         blob_store: Activity archive; built from `config.blob_storage` if omitted.
-        static_dir: Pages served at `/` and `/static`; `$SKINTRACKR_STATIC_DIR` or the repo's `static/`.
+        frontend_dir: The frontend build to serve; `$SKINTRACKR_FRONTEND_DIR` or the repo's `frontend/dist/`.
         subscribe: Make sure a Strava webhook subscription exists, in the background, at startup.
     """
     configure_logging()
-    static_dir = static_dir or Path(os.environ.get("SKINTRACKR_STATIC_DIR", DEFAULT_STATIC_DIR))
+    frontend_dir = (frontend_dir or Path(os.environ.get("SKINTRACKR_FRONTEND_DIR", DEFAULT_FRONTEND_DIR))).resolve()
 
     @asynccontextmanager
     async def lifespan(app: Litestar) -> AsyncGenerator[None]:
@@ -100,20 +104,22 @@ def create_app(
             await redis_client.aclose()
 
     @get(["/", "/{path:path}"], include_in_schema=False)
-    async def index(path: str = "") -> File:
-        return File(
-            static_dir / "index.html",
-            media_type="text/html",
-            content_disposition_type="inline",
-            headers={"Cache-Control": "no-cache"},
-        )
+    async def frontend(request: Request) -> File:
+        """A file from the frontend build (e.g. favicon.svg), or the SPA's index.html for any other path."""
+        file = (frontend_dir / request.path_params.get("path", "").lstrip("/")).resolve()
+        if not (file.is_relative_to(frontend_dir) and file.is_file()):
+            file = frontend_dir / "index.html"
+        # no-cache: browsers revalidate, so they pick up a new build's index.html (and its new bundles)
+        return File(file, filename=file.name, content_disposition_type="inline", headers={"Cache-Control": "no-cache"})
 
     # logging_config=None keeps the JSON format from skintrackr.logging
     return Litestar(
         route_handlers=[
             healthcheck,
-            index,
-            create_static_files_router("/static", directories=[static_dir]),
+            frontend,
+            create_static_files_router(
+                "/assets", directories=[frontend_dir / "assets"], cache_control=ASSETS_CACHE_CONTROL
+            ),
             oauth2_router,
             *webhook_handlers,
             *token_api_handlers,
