@@ -1,6 +1,6 @@
 """JWT signing/verification and symmetric encryption of stored tokens.
 
-Both are wire-compatible with the Go server, so either can read what the other wrote:
+Both are wire-compatible with the former Go server, so tokens and ciphertext it issued stay valid:
 
 - JWTs are HS256 over the raw `APP_SECRET` string, with the claims `athlete_id`, `expires_at`, `jti`, `exp`,
   `iat` and `nbf`.

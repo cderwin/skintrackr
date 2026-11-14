@@ -1,10 +1,10 @@
 """The Litestar app: routes, static pages, startup and shutdown.
 
-Routes (all as in the Go server):
+Routes:
 
 | Route | |
 | --- | --- |
-| `GET /`, `GET /static/*` | landing and confirmation pages |
+| `GET /`, `GET /static/*` | landing and confirmation pages; any other unmatched GET path also gets the landing page |
 | `GET /healthcheck` | `{"ok": true}` |
 | `GET /oauth2/connect`, `GET /oauth2/callback` | connect a Strava account (`oauth2.py`) |
 | `GET/POST /subscriptions/callback` | Strava webhooks (`webhooks.py`) |
@@ -38,7 +38,7 @@ from skintrackr.server.webhooks import establish_subscriptions, webhook_handlers
 
 logger = get_logger(__name__)
 
-# the repository's static/ directory, shared with the Go server
+# the repository's static/ directory
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parents[3] / "static"
 STRAVA_TIMEOUT = httpx.Timeout(30.0)
 

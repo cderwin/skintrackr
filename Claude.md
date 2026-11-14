@@ -6,51 +6,55 @@ This file provides guidelines and context for Claude Code when working on the Sk
 
 **Skintrackr** is a webhook server for Strava activity notifications with OAuth integration and Redis-based token management. It processes Strava webhooks, manages OAuth tokens securely, exports activity data to GPX, and archives activities (metadata + GPX track) to S3-compatible blob storage.
 
+The backend lives in `python/`: a Python 3.12 [uv](https://docs.astral.sh/uv/) project with an async Litestar server, a click CLI, and attrs/cattrs data types. The frontend lives in `static/` (soon a Vue SPA) and is kept separate from the server code; the server serves it at `/static` and as the fallback for every unmatched GET path. It was originally written in Go; the Go code is gone, but the data it wrote (Redis keys, encrypted tokens, issued JWTs, archived blobs) is still live, so those formats must not change (see "Compatibility" in `python/README.md`).
+
 ## Architecture Overview
-
-### Python Port
-
-`python/` is a feature-compatible Python port (uv project; async Litestar server; click CLI; attrs/cattrs data). It mirrors the layering below: `skintrackr/clients/strava.py` (`StravaClient`), `clients/store.py` (`Store`), `clients/blob_store.py` (`BlobStore`), and `server/` (handlers; `server/auth.py` has `authenticate_request`). Changes to behaviour, routes, Redis keys, encryption or JWT claims must be kept in sync between the Go and Python implementations. Before a PR, run `just py-test` and `just py-check` (`ty`), as well as the Go tests. See `python/README.md`.
 
 ### Core Components
 
-1. **app/server.go** - Main HTTP server setup, routes, and `ServerState` management
-2. **app/strava.go** - ALL Strava API interactions via `StravaClient`
-3. **app/store.go** - ALL Redis operations and token management via `Store`
-4. **app/blob_store.go** - ALL blob-storage (S3-compatible) operations via `BlobStore`; orchestrates `PersistActivity` (download from Strava → upload to bucket)
-5. **app/oauth2.go** - OAuth flow handlers (uses `StravaClient` for API calls)
-6. **app/webhooks.go** - Webhook subscription management and inbound push-event handling (uses `StravaClient`, `Store`, and `BlobStore`)
-7. **app/api.go** - Authenticated JSON/file API handlers (`handleExportTrack`, `handlePersistActivity`)
-8. **app/token_api.go** - JWT token generation/verification/revocation handlers and request authentication (`AuthenticateRequest`)
-9. **app/crypto.go** - JWT signing/verification and AES encryption helpers
-10. **app/config.go** - Environment configuration, including `BlobStorageConfig`
+Paths below are relative to `python/`.
+
+1. **skintrackr/server/app.py** - `create_app()`: routes, static pages, lifespan (builds `Services`), error handlers
+2. **skintrackr/server/services.py** - `Services` (config, `Store`, `StravaClient`, `BlobStore`) on `app.state`, and tracked background tasks (`spawn`)
+3. **skintrackr/clients/strava.py** - ALL Strava API interactions via `StravaClient`
+4. **skintrackr/clients/store.py** - ALL Redis operations and token management via `Store`
+5. **skintrackr/clients/blob_store.py** - ALL blob-storage (S3-compatible) operations via `BlobStore`; orchestrates `persist_activity` (download from Strava → upload to bucket)
+6. **skintrackr/server/oauth2.py** - OAuth flow handlers
+7. **skintrackr/server/webhooks.py** - Webhook subscription management and inbound push-event handling
+8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`)
+9. **skintrackr/server/token_api.py** - API token issue/verify/revoke handlers; **server/auth.py** has `authenticate_request`
+10. **skintrackr/crypto.py** - JWT signing/verification and NaCl secretbox encryption
+11. **skintrackr/config.py** - Environment configuration (`Config`, `BlobStorageConfig`)
+12. **skintrackr/server/errors.py** - `{"message": ...}` error responses and `fail_with()`
+13. **skintrackr/models.py**, **gpx.py**, **logging.py** - attrs types + cattrs converter, GPX generation, JSON-lines logging
+14. **skintrackr/cli/** - click commands: `serve`, `strava-debug`
 
 ### Architecture Rules
 
 #### **CRITICAL: Separation of Concerns**
 
-1. **All Strava API requests MUST go through `StravaClient` in `strava.go`**
-   - Use `performRequest()` for simple requests
-   - Use `performRequestForm()` for form POST requests
-   - Use `performRequestWithHeaders()` for custom headers
-   - Never make raw `http.Client` calls to Strava outside of `StravaClient`
+1. **All Strava API requests MUST go through `StravaClient` in `clients/strava.py`**
+   - Use `request()` (it takes `params=`, `form=` and `headers=`, and adds the bearer token)
+   - Get an athlete's client with `services.strava_for(athlete_id)` (refreshes the token if needed)
+   - Never call `httpx` directly for Strava outside of `StravaClient`
 
-2. **All Redis operations MUST go through `Store` in `store.go`**
+2. **All Redis operations MUST go through `Store` in `clients/store.py`**
    - Token storage, retrieval, and refresh logic
    - Encryption/decryption of sensitive data
    - Never access Redis directly outside of `Store`
 
-3. **All blob-storage operations MUST go through `BlobStore` in `blob_store.go`**
-   - Uses the AWS SDK v2 (`s3` client) against an S3-compatible endpoint configured via `BlobStorageConfig`
-   - `PersistActivity` is the entry point: it fetches the activity and GPX track via `StravaClient`, then uploads them under `activities/{athleteId}/...`
-   - Never construct an `s3.Client` or make raw bucket calls outside of `BlobStore`
+3. **All blob-storage operations MUST go through `BlobStore` in `clients/blob_store.py`**
+   - A boto3 `s3` client against the S3-compatible endpoint in `BlobStorageConfig`, built by `BlobStore.build()`; blocking calls run in `asyncio.to_thread`
+   - `persist_activity` is the entry point: it fetches the activity and GPX track via `StravaClient`, then uploads them under `activities/{athleteId}/...`
+   - Never create a boto3 client or make raw bucket calls outside of `BlobStore`
 
 4. **Authentication**
-   - Protected handlers MUST call `s.AuthenticateRequest()` (in `token_api.go`) first and use the returned `athleteId`
-   - JWT and encryption primitives live in `crypto.go`; do not hand-roll token or crypto logic elsewhere
+   - Protected handlers MUST call `authenticate_request()` (in `server/auth.py`) first and use the returned `athlete_id`
+   - JWT and encryption primitives live in `crypto.py`; do not hand-roll token or crypto logic elsewhere
 
 5. **Handler Logic Flow**
-   - Handlers (`api.go`, `oauth2.go`, `webhooks.go`, `token_api.go`) → call `StravaClient`, `Store`, and `BlobStore` methods
+   - Handlers (`api.py`, `oauth2.py`, `webhooks.py`, `token_api.py`) → get `Services` with `get_services(state)` → call `StravaClient`, `Store`, and `BlobStore` methods
+   - Wrap failing steps in `fail_with("message", **context)` rather than hand-written try/except
    - Keep business logic in the appropriate layer; handlers stay thin
 
 ### Data Flow
@@ -58,20 +62,20 @@ This file provides guidelines and context for Claude Code when working on the Sk
 ```
 Request (webhook / API)
         ↓
-Handler (api.go / oauth2.go / webhooks.go / token_api.go)
+Handler (api.py / oauth2.py / webhooks.py / token_api.py)
         ↓
-  ┌─────────────┬───────────────┬────────────────────┐
-  ↓             ↓               ↓                     ↓
-StravaClient   Store          BlobStore            (auth via
-(strava.go)    (store.go)     (blob_store.go)       token_api.go +
-  ↓             ↓               ↓                    crypto.go)
-Strava API     Redis          S3-compatible bucket
+  ┌──────────────┬───────────────┬─────────────────┐
+  ↓              ↓               ↓                  ↓
+StravaClient    Store           BlobStore         (auth via
+(strava.py)     (store.py)      (blob_store.py)    auth.py +
+  ↓              ↓               ↓                  crypto.py)
+Strava API      Redis           S3-compatible bucket
         ↓
      Response
 ```
 
-Webhook activity `create`/`update` events trigger `BlobStore.PersistActivity`
-asynchronously (in a goroutine) so the webhook is acknowledged promptly.
+Webhook activity `create`/`update` events trigger `BlobStore.persist_activity`
+in a background task (`services.spawn`) so the webhook is acknowledged promptly.
 
 ## Git Workflow & Best Practices
 
@@ -139,14 +143,8 @@ Follow conventional commits:
 
 1. **Before Creating PR**
    ```bash
-   # Run tests
-   just test
-
-   # Build to verify
-   go build ./...
-
-   # Ensure code is formatted
-   go fmt ./...
+   just test    # pytest
+   just check   # ty type check
    ```
 
 2. **PR Title Format**
@@ -174,155 +172,54 @@ Follow conventional commits:
 
 ### Local Development
 
-#### Using Just (Recommended)
-```bash
-# Run tests
-just test
-
-# Build Docker image
-just build
-
-# Start with docker-compose (full stack)
-just dev-up
-
-# View logs
-just compose-logs
-
-# Stop stack
-just dev-down
-
-# Restart just the app
-just compose-restart
-```
-
-#### Using Go Directly
-```bash
-# Run tests
-go test ./...
-
-# Run tests with coverage
-go test ./... -cover
-
-# Run tests verbosely
-go test ./app -v
-
-# Build
-go build ./...
-
-# Run locally (requires Redis)
-go run .
-```
-
-### Docker Operations
+Recipes in the root `justfile`; `py-*` recipes run in `python/`, and `test`/`check` aggregate across the repo (and are what CI runs).
 
 ```bash
-# Build image
-docker build . -t skintrackr
-
-# Run with local Redis
-docker compose up --build -d
-
-# View logs
-docker compose logs -f app
-
-# Stop
-docker compose down
+just py-sync       # uv sync (installs dev tools too)
+just py-serve      # run the server with .env loaded (needs Redis)
+just test          # all tests (py-test: uv run pytest)
+just check         # all static checks (py-check: uv run ty check)
+just build         # build the production Docker image
+just dev-up        # docker compose: app + Redis on http://localhost:8080
+just compose-logs  # follow logs
+just dev-down      # stop the stack
+just compose-restart  # restart just the app
 ```
+
+Direct equivalents, from `python/`: `uv run pytest`, `uv run pytest tests/test_api.py -v`, `uv run pytest --cov`
+(if pytest-cov is installed), `uv run skintrackr serve --port 8080`.
 
 ### Deployment to Fly.io
 
-#### Prerequisites
-- Install `flyctl`: https://fly.io/docs/hands-on/install-flyctl/
-- Authenticate: `fly auth login`
-
-#### Deploy Process
+CI (`.github/workflows/ci.yml`) runs `just test` and `just check` on every PR. Pushes to `main` run CI and then deploy (`.github/workflows/fly-deploy.yml`, `flyctl deploy --remote-only`), building the top-level `Dockerfile`, which bakes in `python/` and `static/`.
 
 ```bash
-# 1. Verify fly.toml is correct
-cat fly.toml
-
-# 2. Deploy to Fly.io
-fly deploy
-
-# 3. Check status
-fly status
-
-# 4. View logs
-fly logs
-
-# 5. Open app in browser
-fly open
-```
-
-#### Set Secrets (First Time Setup)
-```bash
-fly secrets set APP_SECRET=$(openssl rand -hex 32)
-fly secrets set STRAVA_CLIENT_ID=your_client_id
-fly secrets set STRAVA_CLIENT_SECRET=your_client_secret
-fly secrets set UPSTASH_REDIS_URL=your_redis_url
-```
-
-#### Common Fly.io Commands
-```bash
-# Scale app
-fly scale count 2
-
-# Check machine status
-fly status
-
-# SSH into machine
-fly ssh console
-
-# Restart app
-fly apps restart skintrackr
-
-# View app info
-fly info
+fly deploy      # deploy by hand
+fly status      # check machines
+fly logs        # view logs
+fly secrets set APP_SECRET=$(openssl rand -hex 32)   # first-time setup; also STRAVA_CLIENT_ID,
+                # STRAVA_CLIENT_SECRET, UPSTASH_REDIS_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 ```
 
 ### Environment Setup
 
-Required environment variables (see `.env.example`):
+Required environment variables (see `.env.example` and `python/README.md`):
 - `APP_BASE_URL` - Base URL for OAuth callbacks
-- `APP_SECRET` - 64-char hex string for encryption
-- `STRAVA_CLIENT_ID` - From Strava API settings
-- `STRAVA_CLIENT_SECRET` - From Strava API settings
+- `APP_SECRET` - hex string, at least 32 bytes decoded (`openssl rand -hex 32`)
+- `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` - From Strava API settings
 - `UPSTASH_REDIS_URL` - Redis connection string
-- `AWS_ACCESS_KEY_ID` - Access key for the S3-compatible blob store
-- `AWS_SECRET_ACCESS_KEY` - Secret key for the S3-compatible blob store
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` - Keys for the S3-compatible blob store
 
-The blob-storage bucket name and endpoint are set in `LoadBlobStorageConfig()` in `config.go`.
+The blob-storage bucket name and endpoint are defaults in `BlobStorageConfig` in `config.py`.
 
 ## Testing Guidelines
 
 ### Unit Test Requirements
 
-1. **All new features MUST have unit tests**
-2. **Use httptest for HTTP mocking** - Never make real network calls
-3. **Test files naming**: `*_test.go` in the same package
-
-### Running Tests
-
-```bash
-# All tests
-go test ./...
-
-# Specific package
-go test ./app
-
-# With coverage
-go test ./... -coverprofile=coverage.out
-go tool cover -html=coverage.out
-
-# Verbose output
-go test ./app -v
-```
-
-### Test Coverage Expectations
-
-- New code should maintain or improve coverage
-- Critical paths (auth, token management) must be well-tested
-- Use table-driven tests for multiple scenarios
+1. **All new features MUST have unit tests** in `python/tests/test_<module>.py`
+2. **Never make real network calls** - use the fakes in `python/tests/conftest.py`: `FakeStrava` (`httpx.MockTransport`), fakeredis, and `FakeBucket` (botocore `Stubber`), plus the `client` fixture (Litestar `TestClient`)
+3. Use `pytest.mark.parametrize` for multiple scenarios
+4. Critical paths (auth, token management) must be well-tested; keep the Go-produced compatibility fixtures in `tests/test_crypto.py` and `tests/test_gpx.py` passing
 
 ## Code Style & Standards
 
@@ -331,145 +228,96 @@ go test ./app -v
 Every change MUST prioritize the following, in order:
 
 1. **Do not duplicate code that already exists.** Before writing anything, look for an existing helper, method, or pattern that already does the job and reuse it. If similar logic exists in two places, factor out a shared function rather than copy-pasting. This is the single most important rule — duplicated logic is the primary thing to avoid.
-2. **Be consistent with the surrounding code.** Match the existing style, naming, error-handling, logging (`slog` with structured context), and architectural layering (`StravaClient` / `Store` / `BlobStore`). New code should be indistinguishable from the code already in the file.
+2. **Be consistent with the surrounding code.** Match the existing style, naming, error-handling (`fail_with`), logging, and architectural layering (`StravaClient` / `Store` / `BlobStore`). New code should be indistinguishable from the code already in the file.
 3. **Stay compact and organized.** Prefer the smallest clear change that solves the problem. Keep handlers thin, push logic into the appropriate layer, and avoid speculative abstraction or unnecessary scaffolding.
 
 When a new feature would otherwise duplicate existing behavior, refactor the shared piece instead — leave the codebase smaller and more cohesive, not larger.
 
-### Go Conventions
+### Python Conventions
 
-1. **Use `gofmt`** - Always format before committing
-   ```bash
-   go fmt ./...
-   ```
-
-2. **Follow effective Go** - https://go.dev/doc/effective_go
-
-3. **Error Handling**
-   - Always check errors
-   - Use structured logging with `slog`
-   - Include context in error messages
-
-4. **Naming Conventions**
-   - Exported: `UpperCamelCase`
-   - Unexported: `lowerCamelCase`
-   - Interfaces: `er` suffix (e.g., `Reader`, `Writer`) or descriptive names
+1. **Fully typed** - `just check` (`ty`) must pass; annotate every function
+2. **Async I/O** - httpx, `redis.asyncio`; run blocking calls (boto3) with `asyncio.to_thread`
+3. **Data types** - attrs classes in `models.py`, (un)structured with the shared cattrs `converter`
+4. **Docstrings** - Google style (`Args:`, `Raises:`) on public functions and classes
+5. **Errors** - raise or let errors propagate; in handlers use `fail_with()` so they are logged and become `{"message": ...}` responses
 
 ### Project-Specific Guidelines
 
 1. **HTTP Client Usage**
-   - ✅ Use `StravaClient.performRequest*()` methods
-   - ❌ Never use `http.Get`, `http.Post`, etc. directly for Strava
+   - ✅ Use `StravaClient` methods (or `StravaClient.request()`)
+   - ❌ Never use `httpx` directly for Strava
 
 2. **Token Management**
-   - ✅ Use `Store.FetchToken()`, `Store.SaveToken()`
+   - ✅ Use `Store.fetch_token()`, `Store.save_token()`
    - ❌ Never access Redis directly outside `Store`
 
 3. **Blob Storage**
-   - ✅ Use `BlobStore` methods (e.g. `PersistActivity()`)
-   - ❌ Never construct an `s3.Client` or call the bucket directly outside `BlobStore`
+   - ✅ Use `BlobStore` methods (e.g. `persist_activity()`)
+   - ❌ Never create a boto3 client or call the bucket directly outside `BlobStore`
 
-5. **Configuration**
-   - Use environment variables via `Config`
+4. **Configuration**
+   - Use environment variables via `Config.from_env()`
    - Never hardcode secrets or URLs
 
-6. **Logging**
-   - Use structured logging: `slog.Info()`, `slog.Error()`
+5. **Logging**
+   - `logger = get_logger(__name__)`; structured context via `extra=`: `logger.info("saved new token", extra={"athlete_id": athlete_id})`
    - Include relevant context (athlete_id, activity_id, etc.)
-   - Log errors before returning them
+   - Log errors before returning or raising them (`fail_with` does this for handlers)
+
+6. **Stored formats are frozen** - Redis keys, ciphertext layout, JWT claims and blob keys/metadata must stay compatible with existing data
 
 ## Common Tasks
 
 ### Adding a New Strava API Endpoint
 
-1. Add method to `StravaClient` in `app/strava.go`
-2. Use existing `performRequest*()` methods
-3. Add unit tests in `app/strava_test.go`
-4. Document the method with comments
+1. Add an async method to `StravaClient` in `clients/strava.py`
+2. Use `self.request()` and decode the body with `_decode()` (the shared cattrs `converter`)
+3. Add unit tests in `tests/test_strava.py` (extend `FakeStrava`)
+4. Document the method with a docstring
 
 Example:
-```go
-func (c *StravaClient) GetAthlete() (*Athlete, error) {
-    body, err := c.performRequest("GET", "https://www.strava.com/api/v3/athlete", nil)
-    if err != nil {
-        return nil, err
-    }
-
-    var athlete Athlete
-    if err := json.NewDecoder(body).Decode(&athlete); err != nil {
-        return nil, err
-    }
-    return &athlete, nil
-}
+```python
+async def get_athlete(self) -> Athlete:
+    """The authenticated athlete."""
+    return _decode(await self.request("GET", f"{API_URL}/athlete"), Athlete)
 ```
 
 ### Adding Redis Operations
 
-1. Add method to `Store` in `app/store.go`
-2. Use `s.client` (Redis client) and `s.ctx` (context)
-3. Handle encryption/decryption if needed
-4. Add error logging (slog)
-5. Write tests
+1. Add an async method to `Store` in `clients/store.py`
+2. Use `self.redis`; encrypt sensitive values with `crypto.encrypt`/`decrypt`
+3. Log errors with structured context
+4. Write tests (fakeredis)
 
 ### Adding Blob Storage Operations
 
-1. Add method to `BlobStore` in `app/blob_store.go`
-2. Build the `s3.Client` from `bs.config.BlobStorageConfig` (reuse the existing pattern in `writeFileToBlob`); never create clients elsewhere
-3. Add error logging (slog) and return errors to the caller
-4. Write tests (stub the S3 endpoint with `httptest`)
+1. Add a method to `BlobStore` in `clients/blob_store.py`, reusing `put()` and the existing key helpers
+2. Log errors and raise them to the caller
+3. Write tests (stub the S3 calls with `FakeBucket`)
 
 ### Adding New HTTP Handlers
 
-1. Add handler method to `ServerState` in `api.go` (or the most relevant existing handler file — reuse it rather than creating a new file)
-2. Register route in `server.go` `RunForever()`
-3. Authenticate with `s.AuthenticateRequest()` for protected endpoints
+1. Add the handler to the most relevant module in `python/skintrackr/server/` (reuse an existing module rather than creating a new one) and to its `*_handlers` list or router
+2. Make sure the list/router is registered in `create_app()` in `server/app.py`
+3. Authenticate with `authenticate_request()` for protected endpoints
 4. Reuse existing `StravaClient`, `Store`, and `BlobStore` methods — do not duplicate their logic in the handler
-5. Return appropriate HTTP status codes via `echo.Context`
+5. Raise `HTTPException` (or use `fail_with`) for error statuses
+
+Note: every unmatched GET path serves the landing page (SPA fallback), so a new GET route that is mistyped returns the landing page instead of 404.
 
 ## Troubleshooting
 
-### Build Issues
-
-```bash
-# Clean and rebuild
-go clean
-go mod tidy
-go build ./...
-```
-
-### Test Failures
-
-- Check if constants/variables need to be mutable for testing
-- Ensure mock servers are set up correctly
-- Verify test data matches expected formats
-
-### Docker Issues
-
-```bash
-# Clean rebuild
-docker compose down -v
-docker compose build --no-cache
-docker compose up
-```
-
-### Deployment Issues
-
-```bash
-# Check Fly.io logs
-fly logs
-
-# Check secrets are set
-fly secrets list
-
-# Verify fly.toml
-fly config validate
-```
+- **Dependencies out of date:** `just py-sync` (`uv lock --upgrade` to bump)
+- **Missing settings:** startup fails with `ConfigError` naming the variable
+- **Docker:** `docker compose down -v && docker compose build --no-cache && docker compose up`
+- **Fly.io:** `fly logs`, `fly secrets list`, `fly config validate`
+- **Strava responses:** set `DEBUG_STRAVA_RESPONSE_BODY=true` to dump bodies to `.request-debug-*.log`
 
 ## Security Considerations
 
 1. **Never commit secrets** - Use environment variables
-2. **Encrypt sensitive data at rest** - Use `encryptToken()`/`decryptToken()` in `store.go`
-3. **Validate OAuth state** - Implement CSRF protection
+2. **Encrypt sensitive data at rest** - `Store` encrypts tokens with `crypto.encrypt`/`decrypt`
+3. **Validate OAuth state** - CSRF protection via `Store.save_oauth_state`/`consume_oauth_state`
 4. **Use HTTPS** - Enforced in production via Fly.io
 5. **Token rotation** - Refresh tokens expire, handle gracefully
 
@@ -477,18 +325,12 @@ fly config validate
 
 - **Strava API Docs**: https://developers.strava.com/docs/reference/
 - **Fly.io Docs**: https://fly.io/docs/
-- **Go Docs**: https://go.dev/doc/
-- **Echo Framework**: https://echo.labstack.com/
-- **Redis Go Client**: https://redis.uptrace.dev/
-- **AWS SDK for Go v2 (S3)**: https://aws.github.io/aws-sdk-go-v2/docs/
-
-## Getting Help
-
-- Check existing tests for examples
-- Review similar existing code
-- Consult Strava API documentation
-- Read Echo framework documentation for HTTP handling
+- **Litestar**: https://docs.litestar.dev/
+- **uv**: https://docs.astral.sh/uv/
+- **attrs / cattrs**: https://www.attrs.org/ , https://catt.rs/
+- **redis-py (asyncio)**: https://redis.readthedocs.io/
+- **boto3 (S3)**: https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html
 
 ---
 
-**Remember**: Write compact, organized code that reuses what already exists and stays consistent with the surrounding style — never duplicate logic. Maintain separation of concerns (Strava API in `strava.go`, Redis in `store.go`, blob storage in `blob_store.go`, auth/crypto in `token_api.go`/`crypto.go`), always run tests before creating PRs, and follow gitflow with PRs for all changes.
+**Remember**: Write compact, organized code that reuses what already exists and stays consistent with the surrounding style — never duplicate logic. Maintain separation of concerns (Strava API in `clients/strava.py`, Redis in `clients/store.py`, blob storage in `clients/blob_store.py`, auth/crypto in `server/auth.py`/`crypto.py`), run `just test` and `just check` before creating PRs, and follow gitflow with PRs for all changes.

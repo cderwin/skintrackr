@@ -1,6 +1,6 @@
 """Store: every Redis operation (Strava tokens, OAuth state, API token revocation).
 
-Keys match the Go server's, so both can share one Redis:
+Keys match those the former Go server wrote, so existing Redis data keeps working:
 
 | Key | Contents |
 | --- | --- |

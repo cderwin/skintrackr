@@ -6,9 +6,6 @@
 app = 'skintrackr'
 primary_region = 'sjc'
 
-[build]
-dockerfile = 'python/Dockerfile'
-
 [env]
 PORT = '8080'
 APP_BASE_URL = "https://skintrackr.fly.dev"

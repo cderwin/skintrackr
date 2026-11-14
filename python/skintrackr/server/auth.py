@@ -93,7 +93,7 @@ async def authenticate_request(request: Request, services: Services) -> AuthToke
 
 
 async def authenticate_request_401(request: Request, services: Services) -> AuthTokenInfo:
-    """`authenticate_request`, but answering every failure with 401 (as the Go token endpoints do)."""
+    """`authenticate_request`, but answering every failure with 401 (the token endpoints' contract)."""
     try:
         return await authenticate_request(request, services)
     except HTTPException as e:

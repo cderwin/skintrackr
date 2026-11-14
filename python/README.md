@@ -1,30 +1,26 @@
-# skintrackr (Python)
+# skintrackr server
 
-A Python port of the skintrackr Go server (`../app`): a Strava webhook server with OAuth, encrypted token
-storage in Redis, JWT-authenticated API, GPX export, and activity archiving to S3-compatible storage.
+The Python backend: a Strava webhook server with OAuth, encrypted token storage in Redis, a JWT-authenticated
+API, GPX export, and activity archiving (metadata + GPX track) to S3-compatible storage. It also serves the
+frontend in the repository's `static/`.
 
-It is a drop-in replacement: it reads the same environment variables, serves the same routes with the same
-status codes and response bodies, and shares Redis keys, encryption, JWTs and blob keys with the Go server,
-so both can run against the same Redis and bucket.
-
-Built with [Litestar](https://litestar.dev) (async), [click](https://click.palletsprojects.com),
-[attrs](https://www.attrs.org)/[cattrs](https://catt.rs), httpx, redis-py (asyncio) and boto3.
+Built with Python 3.12 and [uv](https://docs.astral.sh/uv/): [Litestar](https://litestar.dev) (async),
+[click](https://click.palletsprojects.com), [attrs](https://www.attrs.org)/[cattrs](https://catt.rs), httpx,
+redis-py (asyncio) and boto3.
 
 ## Commands
 
+From the repository root (or the plain `uv run ...` commands in this directory):
+
 ```sh
-uv sync                                        # install (Python 3.12, from .python-version)
-uv run skintrackr serve                        # run the server on 0.0.0.0:8080 (--host, --port)
-uv run skintrackr strava-debug -t TOKEN -a ACTIVITY_ID -o out.gpx   # download a GPX track straight from Strava
-uv run pytest                                  # unit tests
-uv run ty check                                # type check
+just py-sync    # uv sync: install, including dev tools
+just py-serve   # uv run skintrackr serve, with ../.env loaded (0.0.0.0:8080; needs Redis)
+just py-test    # uv run pytest
+just py-check   # uv run ty check
 ```
 
-Production (Fly.io) runs this server from `Dockerfile`, built from the repository root so it can copy
-`static/`: `just py-build` (or `docker build -f python/Dockerfile .`).
-
-`strava-debug` reads the token from `STRAVA_TOKEN` if `-t` is omitted. From the repository root,
-`just py-test` and `just py-check` run the tests and the type check.
+`uv run skintrackr strava-debug -t TOKEN -a ACTIVITY_ID -o out.gpx` downloads a GPX track straight from
+Strava; it reads the token from `STRAVA_TOKEN` if `-t` is omitted.
 
 ## Configuration
 
@@ -36,7 +32,7 @@ Production (Fly.io) runs this server from `Dockerfile`, built from the repositor
 | `UPSTASH_REDIS_URL` | yes | | Redis URL |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | yes | | Blob storage credentials (bucket `skintrackr-storage` at `https://t3.storage.dev`) |
 | `DEBUG_STRAVA_RESPONSE_BODY` | no | `false` | Save every Strava response body to `.request-debug-*.log` in the working directory |
-| `SKINTRACKR_STATIC_DIR` | no | `../static` | Pages served at `/` and `/static` |
+| `SKINTRACKR_STATIC_DIR` | no | `../static` (the repository's `static/`) | Pages served at `/` and `/static` |
 
 Missing or invalid settings fail at startup (`ConfigError`).
 
@@ -44,7 +40,7 @@ Missing or invalid settings fail at startup (`ConfigError`).
 
 | Route | Auth | |
 | --- | --- | --- |
-| `GET /`, `GET /static/*` | | Landing and confirmation pages (the repo's `static/`) |
+| `GET /`, `GET /static/*` | | Landing and confirmation pages (the repo's `static/`); any other unmatched GET path also gets the landing page, uncached |
 | `GET /healthcheck` | | `{"ok": true}` |
 | `GET /oauth2/connect` | | Redirect to Strava to connect an account |
 | `GET /oauth2/callback` | | Store the athlete's tokens; redirect to the confirmation page with the token in the fragment |
@@ -81,18 +77,19 @@ skintrackr/
     app.py           create_app(): routes, static files, lifespan, error handlers
     services.py      Services shared by handlers (on app.state), and background tasks
     auth.py          authenticate_request(): bearer token -> AuthTokenInfo
-    errors.py        Echo-style error responses and fail_with()
+    errors.py        `{"message": ...}` error responses and fail_with()
     oauth2.py  webhooks.py  token_api.py  api.py    route handlers
   cli/               click commands: serve, strava-debug
 tests/               pytest; fakes for Strava (httpx.MockTransport), Redis (fakeredis) and S3 (botocore Stubber)
 ```
 
-The same layering rules as the Go server apply: Strava requests only through `StravaClient`, Redis only
-through `Store`, the bucket only through `BlobStore`, and handlers authenticate first and stay thin.
+Strava requests go only through `StravaClient`, Redis only through `Store`, the bucket only through
+`BlobStore`, and handlers authenticate first and stay thin.
 
-## Compatibility with the Go server
+## Compatibility with the former Go server
 
-Shared with Go, so either server can read what the other wrote:
+skintrackr was originally written in Go. The Python server reads and writes the same data, so everything
+the Go server stored (tokens, issued JWTs, archived activities) keeps working:
 
 - **Redis keys:** `athlete:{id}:strava-token` (hash of encrypted `access_token`/`refresh_token`, `expires_at`),
   `oauth:state:{state}` (10 min TTL), `jwt:jti:{jti}`, and `jwt:revoked:{jti}` (both expire with the token).
@@ -104,7 +101,7 @@ Shared with Go, so either server can read what the other wrote:
 
 The tests check this against fixtures produced by the Go code (`tests/test_crypto.py`, `tests/test_gpx.py`).
 
-Deliberate differences:
+Deliberate differences from the Go server's API:
 
 - `POST /token/verify` answers with the token's details (`valid`, `athlete_id`, `issued_at`, `expires_at`,
   `jti`). Go answers `{}` because its struct's fields are unexported.

@@ -31,7 +31,7 @@ class PersistedActivity:
 
 
 def activity_keys(athlete_id: int, activity_id: int) -> PersistedActivity:
-    """The keys an activity is archived under (the same as the Go server's)."""
+    """The keys an activity is archived under (the same as the former Go server's)."""
     return PersistedActivity(
         metadata_key=f"activities/{athlete_id}/metadata/{activity_id}.json",
         track_key=f"activities/{athlete_id}/tracks/{activity_id}.gpx",
