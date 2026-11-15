@@ -58,6 +58,11 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS
   <PageCard v-else icon="⛰️" title="Season vert" :subtitle="subtitle || 'Loading your activities…'">
     <p v-if="error" class="error">{{ error }}</p>
 
+    <p v-else-if="stats && !stats.activities" class="empty">
+      No activities imported yet. <RouterLink class="brand-link" to="/">Import them from the home page</RouterLink>
+      to see your season.
+    </p>
+
     <template v-else-if="stats">
       <div class="ring">
         <svg viewBox="0 0 160 160" role="img" :aria-label="`${Math.round(progress * 100)}% of goal`">
@@ -103,6 +108,12 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 .error {
   color: #b91c1c;
   font-size: 15px;
+}
+
+.empty {
+  color: #475569;
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 .ring {

@@ -2,6 +2,7 @@
 import { useSignedIn } from '@/api'
 import AppLinks from '@/components/AppLinks.vue'
 import ConnectButton from '@/components/ConnectButton.vue'
+import ImportPanel from '@/components/ImportPanel.vue'
 import PageCard from '@/components/PageCard.vue'
 
 const signedIn = useSignedIn()
@@ -19,7 +20,10 @@ const features = [
     subtitle="Automatically track your backcountry ski adventures from Strava"
     :features="features"
   >
-    <AppLinks v-if="signedIn" />
+    <template v-if="signedIn">
+      <AppLinks />
+      <ImportPanel />
+    </template>
     <ConnectButton v-else-if="signedIn === false" />
 
     <template #disclaimer>

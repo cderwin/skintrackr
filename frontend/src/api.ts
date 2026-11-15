@@ -17,6 +17,18 @@ export interface VertStats {
   as_of: string
   /** This year first, then previous years. */
   years: YearVert[]
+  /** Activities imported (0: nothing imported yet). */
+  activities: number
+}
+
+export interface ImportStatus {
+  state: 'idle' | 'running' | 'done' | 'failed'
+  /** Activities indexed (enough for stats). */
+  activities: number
+  /** Activities archived in full (details and streams), out of tracks_total. */
+  tracks_done: number
+  tracks_total: number
+  error: string
 }
 
 export interface StravaToken {
@@ -48,6 +60,8 @@ export const api = {
   verify: () => call<{ athlete_id: number }>('POST', '/token/verify'),
   vert: () => call<VertStats>('GET', `/api/stats/vert?today=${localDate()}`),
   stravaToken: () => call<StravaToken>('GET', '/api/strava-token'),
+  importStatus: () => call<ImportStatus>('GET', '/api/import'),
+  startImport: () => call<ImportStatus>('POST', '/api/import'),
   logout: () => call<{ ok: boolean }>('POST', '/oauth2/logout'),
 }
 
