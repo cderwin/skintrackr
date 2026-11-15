@@ -7,7 +7,7 @@ import pytest
 from skintrackr.clients.store import NotFoundError, Store
 from skintrackr.clients.strava import StravaError
 from skintrackr.crypto import TokenClaims, decrypt
-from skintrackr.models import TokenInfo
+from skintrackr.models import ActivityMap, ActivitySummary, ImportStatus, TokenInfo
 from tests.conftest import ATHLETE_ID, SECRET, FakeStrava
 from tests.test_crypto import GO_CIPHERTEXT
 
@@ -144,3 +144,59 @@ def test_revoke_jwt(store: Store) -> None:
 def test_revoke_unknown_jwt(store: Store) -> None:
     with pytest.raises(NotFoundError, match="not found or already expired"):
         asyncio.run(store.revoke_jwt("unknown"))
+
+
+# --- activity index
+
+
+def test_activity_index(store: Store) -> None:
+    first = ActivitySummary(id=1, name="Skin", sport_type="BackcountrySki", map=ActivityMap(summary_polyline="abc"))
+    second = ActivitySummary(id=2, total_elevation_gain=12.5)
+
+    async def run() -> None:
+        await store.save_activities(ATHLETE_ID, [first, second])
+        await store.save_activities(ATHLETE_ID, [])  # nothing to write
+        renamed = ActivitySummary(id=1, name="Renamed")
+        await store.save_activities(ATHLETE_ID, [renamed])
+        assert sorted(await store.activities(ATHLETE_ID), key=lambda a: a.id) == [renamed, second]
+        await store.delete_activity(ATHLETE_ID, 2)
+        assert await store.activities(ATHLETE_ID) == [renamed]
+        assert await store.activities(ATHLETE_ID + 1) == []
+
+    asyncio.run(run())
+
+
+# --- imports
+
+
+def test_import_status_tracks_running_imports(store: Store) -> None:
+    async def run() -> None:
+        assert await store.load_import(ATHLETE_ID) == ImportStatus()
+        await store.save_import(ATHLETE_ID, ImportStatus(state="running", activities=3))
+        status = await store.load_import(ATHLETE_ID)
+        assert (status.state, status.activities) == ("running", 3)
+        assert status.updated_at >= int(time.time()) - 5
+        assert await store.running_imports() == [ATHLETE_ID]
+        await store.save_import(ATHLETE_ID, ImportStatus(state="done"))
+        assert await store.running_imports() == []
+
+    asyncio.run(run())
+
+
+def test_delete_athlete(store: Store) -> None:
+    async def run() -> None:
+        await store.save_token(ATHLETE_ID, TOKEN)
+        await store.save_activities(ATHLETE_ID, [ActivitySummary(id=1)])
+        await store.save_import(ATHLETE_ID, ImportStatus(state="running"))
+        await store.save_token(ATHLETE_ID + 1, TOKEN)
+
+        await store.delete_athlete(ATHLETE_ID)
+        assert await store.activities(ATHLETE_ID) == []
+        assert await store.load_import(ATHLETE_ID) == ImportStatus()
+        assert await store.running_imports() == []
+        with pytest.raises(NotFoundError):
+            await store.fetch_token(ATHLETE_ID)
+        assert await store.fetch_token(ATHLETE_ID + 1) == "access"
+
+    asyncio.run(run())
+

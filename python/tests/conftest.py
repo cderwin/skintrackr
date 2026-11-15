@@ -1,19 +1,21 @@
-"""Shared fixtures and test doubles: a fake Strava API, fake Redis, stubbed S3 and an app test client."""
+"""Shared fixtures and test doubles: a fake Strava API, fake Redis, in-memory S3 (moto) and an app test client."""
 
 import asyncio
+import gzip
 import json
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import boto3
 import httpx
 import pytest
-from botocore.stub import ANY, Stubber
+from botocore.exceptions import ClientError
 from fakeredis import FakeAsyncRedis, FakeServer
 from litestar.testing import TestClient
+from moto import mock_aws
 
 from skintrackr.clients.blob_store import BlobStore
 from skintrackr.clients.store import Store
@@ -22,6 +24,7 @@ from skintrackr.config import BlobStorageConfig, Config
 from skintrackr.crypto import generate_jwt
 from skintrackr.models import TokenInfo
 from skintrackr.server.app import create_app
+from skintrackr.server.auth import SESSION_COOKIE
 from skintrackr.server.services import Services
 
 SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -55,6 +58,15 @@ STREAMS = [
 Route = Callable[[httpx.Request], httpx.Response]
 
 
+def _unix(iso: str) -> int:
+    return int(datetime.fromisoformat(iso).timestamp())
+
+
+def summary(activity_id: int, day: str, vert: float, sport_type: str = "BackcountrySki") -> dict[str, Any]:
+    """An activity as Strava lists it, starting at 9am local time on `day` (YYYY-MM-DD)."""
+    return {"id": activity_id, "sport_type": sport_type, "start_date_local": f"{day}T09:00:00Z", "total_elevation_gain": vert}
+
+
 class FakeStrava:
     """A fake Strava API: canned responses by method and path, and a record of every request."""
 
@@ -70,6 +82,17 @@ class FakeStrava:
         """Serve an activity and its streams."""
         self.add("GET", f"/api/v3/activities/{activity['id']}", activity)
         self.add("GET", f"/api/v3/activities/{activity['id']}/streams", streams)
+
+    def add_activities(self, activities: list[dict[str, Any]]) -> None:
+        """Serve the athlete's activity list, filtered by `after` and paged like Strava (by `start_date_local`)."""
+
+        def route(request: httpx.Request) -> httpx.Response:
+            after = int(request.url.params.get("after", 0))
+            matching = [a for a in activities if _unix(a["start_date_local"]) > after]
+            per_page, page = int(request.url.params["per_page"]), int(request.url.params["page"])
+            return httpx.Response(200, json=matching[(page - 1) * per_page : page * per_page])
+
+        self.routes[("GET", "/api/v3/athlete/activities")] = route
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -89,37 +112,37 @@ class FakeStrava:
 
 
 class FakeBucket:
-    """A real boto3 S3 client with stubbed responses, recording each object written."""
+    """An in-memory S3 bucket (moto), with a BlobStore on it."""
+
+    NAME = "skintrackr-test"
 
     def __init__(self) -> None:
-        self.s3 = boto3.client(
-            "s3",
-            region_name="auto",
-            endpoint_url="https://s3.test",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-        self.stubber = Stubber(self.s3)
-        self.objects: dict[str, tuple[bytes, str]] = {}
-        self.s3.meta.events.register("before-parameter-build.s3.PutObject", self._record)
-        self.store = BlobStore(s3=self.s3, bucket="skintrackr-test")
+        self.s3 = boto3.client("s3", region_name="us-east-1", aws_access_key_id="test", aws_secret_access_key="test")
+        self.s3.create_bucket(Bucket=self.NAME)
+        self.store = BlobStore(s3=self.s3, bucket=self.NAME)
 
-    def _record(self, params: dict[str, Any], **_: Any) -> None:
-        self.objects[params["Key"]] = (params["Body"], params["ContentType"])
+    def keys(self) -> set[str]:
+        pages = self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.NAME)
+        return {obj["Key"] for page in pages for obj in page.get("Contents", [])}
 
-    def expect_puts(self, count: int) -> None:
-        """Accept `count` more PutObject calls."""
-        for _ in range(count):
-            self.stubber.add_response(
-                "put_object", {}, {"Bucket": "skintrackr-test", "Key": ANY, "Body": ANY, "ContentType": ANY}
-            )
-
-    def expect_put_error(self) -> None:
-        """Fail the next PutObject call."""
-        self.stubber.add_client_error("put_object", "InternalError", http_status_code=500)
+    def read(self, key: str) -> bytes:
+        """An object's contents (decompressed if gzipped)."""
+        body = self.s3.get_object(Bucket=self.NAME, Key=key)["Body"].read()
+        return gzip.decompress(body) if key.endswith(".gz") else body
 
     def json(self, key: str) -> Any:
-        return json.loads(self.objects[key][0])
+        return json.loads(self.read(key))
+
+    def put(self, key: str, body: bytes = b"{}") -> None:
+        self.s3.put_object(Bucket=self.NAME, Key=key, Body=body)
+
+    def fail_writes(self) -> None:
+        """Make every later PutObject fail."""
+
+        def fail(**_: Any) -> None:
+            raise ClientError({"Error": {"Code": "InternalError", "Message": "injected"}}, "PutObject")
+
+        self.s3.meta.events.register("before-call.s3.PutObject", fail)
 
 
 @pytest.fixture
@@ -142,9 +165,8 @@ def strava() -> FakeStrava:
 
 @pytest.fixture
 def bucket() -> Iterator[FakeBucket]:
-    bucket = FakeBucket()
-    with bucket.stubber:
-        yield bucket
+    with mock_aws():
+        yield FakeBucket()
 
 
 @pytest.fixture
@@ -192,6 +214,11 @@ def issue_api_token(server: FakeServer, athlete_id: int = ATHLETE_ID) -> str:
     return jwt
 
 
+def session(token: str) -> dict[str, str]:
+    """Headers sending `token` in the session cookie (the test client is on http, so it won't keep Secure cookies)."""
+    return {"Cookie": f"{SESSION_COOKIE}={token}"}
+
+
 def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -223,7 +250,7 @@ def client(
         http=strava.http(),
         blob_store=bucket.store,
         frontend_dir=frontend_dir,
-        subscribe=False,
+        startup_tasks=False,
     )
     with TestClient(app) as client:
         yield client

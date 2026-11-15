@@ -7,10 +7,10 @@ Routes:
 | `GET /assets/*` | the frontend's hashed bundles (cached for a year) |
 | any other `GET` | a file from the frontend build, else its `index.html` (the SPA routes the path) |
 | `GET /healthcheck` | `{"ok": true}` |
-| `GET /oauth2/connect`, `GET /oauth2/callback` | connect a Strava account (`oauth2.py`) |
+| `GET /oauth2/connect`, `GET /oauth2/callback`, `POST /oauth2/logout` | connect a Strava account and sign the browser in and out (`oauth2.py`) |
 | `GET/POST /subscriptions/callback` | Strava webhooks (`webhooks.py`) |
 | `GET /token/new`, `GET /token/callback`, `POST /token/verify`, `POST /token/revoke`, `GET /api/strava-token` | API tokens (`token_api.py`) |
-| `GET /api/activity/{id}/export`, `POST /api/activity/{id}/persist` | activities (`api.py`) |
+| `GET /api/activity/{id}/export`, `POST /api/activity/{id}/persist`, `GET /api/stats/vert` | activities (`api.py`) |
 """
 
 import os
@@ -36,7 +36,8 @@ from skintrackr.server.errors import http_exception_handler, internal_error_hand
 from skintrackr.server.oauth2 import oauth2_router
 from skintrackr.server.services import Services
 from skintrackr.server.token_api import token_api_handlers
-from skintrackr.server.webhooks import establish_subscriptions, webhook_handlers
+from skintrackr.server.ingest import resume_imports
+from skintrackr.server.webhooks import ensure_subscription, webhook_handlers
 
 logger = get_logger(__name__)
 
@@ -60,7 +61,7 @@ def create_app(
     http: httpx.AsyncClient | None = None,
     blob_store: BlobStore | None = None,
     frontend_dir: Path | None = None,
-    subscribe: bool = True,
+    startup_tasks: bool = True,
 ) -> Litestar:
     """Build the app. Anything not passed is built from the environment at startup.
 
@@ -70,7 +71,8 @@ def create_app(
         http: HTTP client for Strava requests.
         blob_store: Activity archive; built from `config.blob_storage` if omitted.
         frontend_dir: The frontend build to serve; `$SKINTRACKR_FRONTEND_DIR` or the repo's `frontend/dist/`.
-        subscribe: Make sure a Strava webhook subscription exists, in the background, at startup.
+        startup_tasks: At startup, in the background: make sure the Strava webhook subscription exists, and
+            resume the imports that were running when the server stopped.
     """
     configure_logging()
     frontend_dir = (frontend_dir or Path(os.environ.get("SKINTRACKR_FRONTEND_DIR", DEFAULT_FRONTEND_DIR))).resolve()
@@ -93,9 +95,10 @@ def create_app(
             blob_store=blob_store or BlobStore.build(app_config.blob_storage),
         )
         app.state.services = services
-        if subscribe:
-            logger.info("Establishing subscriptions in background")
-            services.spawn(establish_subscriptions(services), name="establish-subscriptions")
+        if startup_tasks:
+            logger.info("Establishing subscriptions and resuming imports in background")
+            ensure_subscription(services)
+            services.spawn(resume_imports(services), name="resume-imports")
         try:
             yield
         finally:

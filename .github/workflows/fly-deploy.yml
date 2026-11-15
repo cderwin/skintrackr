@@ -21,6 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+      - name: Check secrets
+        env:
+          VITE_MAPTILER_KEY: ${{ secrets.VITE_MAPTILER_KEY }}
+        run: '[ -n "$VITE_MAPTILER_KEY" ] || echo "::warning::VITE_MAPTILER_KEY is not set; /map will show a missing-key message"'
+      - run: flyctl deploy --remote-only --build-arg VITE_MAPTILER_KEY="$VITE_MAPTILER_KEY"
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          VITE_MAPTILER_KEY: ${{ secrets.VITE_MAPTILER_KEY }}

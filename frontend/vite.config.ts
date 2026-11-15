@@ -7,6 +7,8 @@ const serverRoutes = ['/oauth2', '/token', '/api', '/subscriptions', '/healthche
 
 export default defineConfig({
   plugins: [vue()],
+  // VITE_* variables (e.g. VITE_MAPTILER_KEY) come from the repository's .env
+  envDir: '..',
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

@@ -4,7 +4,6 @@
 tokens and answers with a skintrackr bearer token (a JWT, valid for 30 days) for the `/api` routes.
 """
 
-from datetime import timedelta
 from typing import Annotated, Any
 
 from litestar import Request, get, post
@@ -13,17 +12,16 @@ from litestar.exceptions import ClientException, NotAuthorizedException, Permiss
 from litestar.params import FromQuery, QueryParameter
 from litestar.response import Redirect
 
-from skintrackr.crypto import InvalidTokenError, generate_jwt, verify_jwt
+from skintrackr.crypto import InvalidTokenError, verify_jwt
 from skintrackr.logging import get_logger
 from skintrackr.models import converter
-from skintrackr.server.auth import authenticate_request_401, bearer_token
+from skintrackr.server.auth import authenticate_request_401, issue_token, request_token
 from skintrackr.server.errors import fail_with
 from skintrackr.server.oauth2 import exchange_and_save
 from skintrackr.server.services import get_services
 
 logger = get_logger(__name__)
 
-TOKEN_LIFETIME = timedelta(days=30)
 CALLBACK_PATH = "token/callback"
 
 
@@ -54,10 +52,7 @@ async def token_callback(
         raise PermissionDeniedException("Invalid or expired state token")
 
     token = await exchange_and_save(services, code, "token API")
-    with fail_with("Failed to generate access token"):
-        jwt, claims = generate_jwt(token.athlete.id, services.config.secret, TOKEN_LIFETIME)
-    with fail_with("Failed to save token metadata", athlete_id=token.athlete.id):
-        await services.store.save_jwt(claims)
+    jwt = await issue_token(services, token.athlete.id)
     return {"access_token": jwt, "token_type": "Bearer", "athlete_id": token.athlete.id}
 
 
@@ -79,7 +74,7 @@ async def token_revoke(request: Request, state: State) -> dict[str, Any]:
     """Revoke the request's API token."""
     services = get_services(state)
     try:
-        claims = verify_jwt(bearer_token(request), services.config.secret)
+        claims = verify_jwt(request_token(request), services.config.secret)
     except InvalidTokenError as e:
         logger.error("JWT verification failed for revocation", extra={"err": str(e)})
         raise NotAuthorizedException("Invalid or expired token") from e

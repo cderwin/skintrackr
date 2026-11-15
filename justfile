@@ -60,10 +60,10 @@ web-typecheck:
 
 # --- docker
 
-# Build the production image (what Fly deploys)
+# Build the production image (what Fly deploys), with VITE_MAPTILER_KEY from .env if it's there
 [group('docker')]
 build:
-    docker build . -t skintrackr
+    docker build . -t skintrackr --build-arg VITE_MAPTILER_KEY="$(grep -s '^VITE_MAPTILER_KEY=' .env | cut -d= -f2-)"
 
 [group('docker')]
 start:

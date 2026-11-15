@@ -8,10 +8,21 @@ from litestar.testing import TestClient
 from skintrackr.clients.store import Store
 from skintrackr.clients.strava import StravaClient
 from skintrackr.config import Config
+from skintrackr.models import ImportStatus
 from skintrackr.server.app import create_app
 from skintrackr.server.services import Services
 from skintrackr.server.webhooks import establish_subscriptions
-from tests.conftest import ASSET_PATH, INDEX_HTML, FakeBucket, FakeStrava, fake_redis, wait_for_background
+from tests.conftest import (
+    ASSET_PATH,
+    ATHLETE_ID,
+    INDEX_HTML,
+    FakeBucket,
+    FakeStrava,
+    fake_redis,
+    save_strava_token,
+    wait_for_background,
+    with_store,
+)
 
 
 def test_healthcheck(client: TestClient) -> None:
@@ -92,3 +103,14 @@ def test_subscribes_at_startup(config, strava: FakeStrava, bucket, redis_server)
     with TestClient(app) as client:
         wait_for_background(client)
     assert strava.last("GET", "/api/v3/push_subscriptions")
+
+
+def test_resumes_running_imports_at_startup(config, strava: FakeStrava, bucket, redis_server) -> None:
+    save_strava_token(redis_server)
+    with_store(redis_server, lambda s: s.save_import(ATHLETE_ID, ImportStatus(state="running")))
+    strava.add_activities([])
+    app = create_app(config, redis=fake_redis(redis_server), http=strava.http(), blob_store=bucket.store)
+    with TestClient(app) as client:
+        wait_for_background(client)
+    assert with_store(redis_server, lambda s: s.load_import(ATHLETE_ID)).state == "done"
+

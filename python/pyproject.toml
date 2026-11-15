@@ -30,6 +30,7 @@ module-root = ""
 dev = [
     "boto3-stubs[s3]>=1.44.3",
     "fakeredis>=2.40.0",
+    "moto[s3]>=5.2.5",
     "pytest>=9.2.0",
     "ty>=0.0.104",
 ]

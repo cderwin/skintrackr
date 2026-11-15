@@ -45,6 +45,16 @@ class Services:
         task.add_done_callback(self._finished)
         return task
 
+    def is_running(self, name: str) -> bool:
+        """Whether a background task called `name` is running."""
+        return any(task.get_name() == name for task in self.background)
+
+    def cancel(self, name: str) -> None:
+        """Cancel the background tasks called `name`, if any."""
+        for task in self.background:
+            if task.get_name() == name:
+                task.cancel()
+
     def _finished(self, task: asyncio.Task[None]) -> None:
         self.background.discard(task)
         if not task.cancelled() and (error := task.exception()) is not None:

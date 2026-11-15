@@ -1,13 +1,23 @@
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 
-from skintrackr.clients.strava import AUTH_URL, SCOPE, StravaClient, StravaError, merge_streams
+from skintrackr.clients.strava import (
+    ACTIVITIES_PER_PAGE,
+    ARCHIVE_STREAM_KEYS,
+    AUTH_URL,
+    SCOPE,
+    RateLimiter,
+    StravaClient,
+    StravaError,
+    merge_streams,
+)
 from skintrackr.models import RawStream, StravaActivity
-from tests.conftest import ACTIVITY, ACTIVITY_ID, ATHLETE_ID, FakeStrava
+from tests.conftest import ACTIVITY, ACTIVITY_ID, ATHLETE_ID, FakeStrava, summary
 
 
 def form(request: httpx.Request) -> dict[str, str]:
@@ -240,3 +250,106 @@ def test_export_activity_gpx_stream_error(strava: FakeStrava) -> None:
     with pytest.raises(StravaError, match="invalid status 404"):
         asyncio.run(strava.client("t").export_activity_gpx(activity))
 
+
+
+def test_list_activities_pages_through_results(strava: FakeStrava) -> None:
+    strava.add_activities([summary(i, "2026-01-02", 1.0) for i in range(ACTIVITIES_PER_PAGE + 1)])
+    after = datetime(2026, 1, 1, tzinfo=UTC)
+    activities = asyncio.run(strava.client("athlete-token").list_activities(after))
+
+    assert [a.id for a in activities] == list(range(ACTIVITIES_PER_PAGE + 1))
+    pages = [r.url.params for r in strava.requests]
+    assert [p["page"] for p in pages] == ["1", "2"]
+    assert all(p["after"] == str(int(after.timestamp())) and "before" not in p for p in pages)
+
+
+def test_list_activities_before(strava: FakeStrava) -> None:
+    strava.add_activities([])
+    before = datetime(2026, 2, 1, tzinfo=UTC)
+    asyncio.run(strava.client().list_activities(datetime(2026, 1, 1, tzinfo=UTC), before))
+    assert strava.requests[0].url.params["before"] == str(int(before.timestamp()))
+
+
+# --- rate limits
+
+NOON = datetime(2026, 11, 14, 12, 7, tzinfo=UTC)
+
+
+def limiter(now: datetime = NOON) -> tuple[RateLimiter, list[float]]:
+    """A limiter at a fixed time, recording how long it would sleep."""
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    return RateLimiter(clock=lambda: now, sleep=sleep), slept
+
+
+def headers(usage: str, limit: str = "100,1000") -> dict[str, str]:
+    return {"X-ReadRateLimit-Usage": usage, "X-ReadRateLimit-Limit": limit}
+
+
+@pytest.mark.parametrize(
+    ("usage", "delay"),
+    [
+        (None, 0.0),  # nothing known yet
+        ("10,100", 0.0),
+        ("90,100", 8 * 60),  # within 10% of the 15-minute limit: until 12:15
+        ("10,900", 11 * 3600 + 53 * 60),  # within 10% of the daily limit: until midnight UTC
+    ],
+)
+def test_limiter_delay(usage: str | None, delay: float) -> None:
+    rate, _ = limiter()
+    if usage:
+        rate.update(headers(usage))
+    assert rate.delay() == delay
+
+
+def test_limiter_falls_back_to_overall_limits_and_ignores_garbage() -> None:
+    rate, _ = limiter()
+    rate.update({"X-RateLimit-Usage": "199,10", "X-RateLimit-Limit": "200,2000"})
+    assert rate.delay() == 8 * 60
+    rate.update({"X-RateLimit-Usage": "nonsense", "X-RateLimit-Limit": "200,2000"})
+    assert rate.delay() == 8 * 60
+
+
+def test_limiter_wait_resets_the_window() -> None:
+    rate, slept = limiter()
+    rate.update(headers("95,500"))
+    asyncio.run(rate.wait())
+    assert slept == [8 * 60]
+    assert rate.delay() == 0.0
+    asyncio.run(rate.wait())
+    assert slept == [8 * 60]  # no second wait
+
+
+def test_background_requests_wait_and_retry_on_429(strava: FakeStrava) -> None:
+    rate, slept = limiter()
+    responses = iter([httpx.Response(429, headers=headers("100,200")), httpx.Response(200, json={"ok": 1})])
+    strava.routes[("GET", "/x")] = lambda _: next(responses)
+    client = StravaClient(http=strava.http(), limiter=rate).in_background()
+
+    assert asyncio.run(client.request("GET", "https://www.strava.com/x")) == b'{"ok":1}'
+    assert slept == [8 * 60]
+    assert len(strava.requests) == 2
+
+
+def test_foreground_requests_neither_wait_nor_retry(strava: FakeStrava) -> None:
+    rate, slept = limiter()
+    rate.update(headers("100,200"))
+    strava.add("GET", "/x", status=429)
+    with pytest.raises(StravaError):
+        asyncio.run(StravaClient(http=strava.http(), limiter=rate).request("GET", "https://www.strava.com/x"))
+    assert slept == []
+
+
+def test_derived_clients_share_the_limiter(strava: FakeStrava) -> None:
+    client = strava.client()
+    assert client.with_token("t").in_background().limiter is client.limiter
+
+
+def test_archive_streams_of_manual_activity(strava: FakeStrava) -> None:
+    client = strava.client("t")
+    assert asyncio.run(client.get_streams_json("1", ARCHIVE_STREAM_KEYS)) == b"[]"
+    with pytest.raises(StravaError):
+        asyncio.run(client.get_streams_json("1"))  # GPX export still needs them

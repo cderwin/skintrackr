@@ -18,6 +18,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_MAPTILER_KEY: ${VITE_MAPTILER_KEY:-}
     container_name: skintrackr-app
     ports:
       - "8080:8080"

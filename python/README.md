@@ -19,6 +19,7 @@ just py-test    # uv run pytest
 just py-check   # uv run ty check
 ```
 
+`uv run skintrackr migrate-legacy --athlete N` deletes an athlete's archive in the former layout (see below).
 `uv run skintrackr strava-debug -t TOKEN -a ACTIVITY_ID -o out.gpx` downloads a GPX track straight from
 Strava; it reads the token from `STRAVA_TOKEN` if `-t` is omitted.
 
@@ -44,19 +45,60 @@ Missing or invalid settings fail at startup (`ConfigError`).
 | any other `GET` | | A file from the frontend build (e.g. `/favicon.svg`), else its `index.html`, uncached, for the SPA to route |
 | `GET /healthcheck` | | `{"ok": true}` |
 | `GET /oauth2/connect` | | Redirect to Strava to connect an account |
-| `GET /oauth2/callback` | | Store the athlete's tokens; redirect to the frontend's `/connected` page with the token in the fragment |
+| `GET /oauth2/callback` | | Store the athlete's tokens, sign the browser in (session cookie, 30 days), and redirect to the frontend's `/connected` page |
+| `POST /oauth2/logout` | | Revoke the browser's session token (if valid) and clear the cookie |
 | `GET /subscriptions/callback` | `hub.verify_token` | Webhook verification: echoes `hub.challenge` |
-| `POST /subscriptions/callback` | | Webhook events; activity `create`/`update` archive the activity in the background |
+| `POST /subscriptions/callback` | | Webhook events, handled in the background: activity `create`/`update` archive and index it, `delete` removes it, athlete deauthorization deletes everything stored for them |
 | `GET /token/new` | | Start the OAuth flow that issues an API token (with CSRF `state`) |
 | `GET /token/callback` | `state` | `{"access_token", "token_type": "Bearer", "athlete_id"}`; a JWT valid for 30 days |
 | `POST /token/verify` | bearer | The token's details |
 | `POST /token/revoke` | bearer | Revoke the token |
 | `GET /api/strava-token` | bearer | The athlete's Strava token (refreshed if expired) |
-| `GET /api/activity/{id}/export` | bearer | The activity as a GPX download |
-| `POST /api/activity/{id}/persist` | bearer | Archive the activity: `{"ok": true, "activityId": id}` |
+| `GET /api/activity/{id}/export` | bearer | The activity as a GPX download: from the bucket if archived, else straight from Strava |
+| `POST /api/activity/{id}/persist` | bearer | Archive and index the activity: `{"ok": true, "activityId": id}` |
+| `POST /api/import` | bearer | Start a bulk import of the athlete's activities (202; no-op if one is running); answers with its status |
+| `GET /api/import` | bearer | Import progress: `{"state": "idle"\|"running"\|"done"\|"failed", "activities", "tracks_done", "tracks_total", "error"}` |
+| `GET /api/stats/vert?today=YYYY-MM-DD` | bearer | On-foot vert from Jan 1 to today's date, this year and the 5 before, from the activity index: `{"as_of", "activities", "years": [{"year", "vert_m"}, ...]}` |
 
-Errors are `{"message": "..."}`. A missing or malformed `Authorization` header is 401; an invalid, expired or
-revoked token is 403 on `/api/activity/...` and 401 on the `/token/...` and `/api/strava-token` routes.
+"bearer" routes take the API token as `Authorization: Bearer <token>` (the CLI's, from `/token/callback`) or, when
+there's no `Authorization` header, from the `skintrackr_session` cookie (the browser's: HttpOnly, Secure,
+SameSite=Lax). The token itself lives only with the client; Redis keeps just its `jwt:jti:` record, so it can be revoked.
+
+Errors are `{"message": "..."}`. A missing token or malformed `Authorization` header is 401; an invalid, expired or
+revoked token is 403 on `/api/activity/...` and `/api/stats/...`, and 401 on the `/token/...` and `/api/strava-token` routes.
+
+`/api/stats/vert` counts every sport except cycling and lift-served skiing (`EXCLUDED_SPORT_TYPES` in `vert.py`),
+by each activity's local start date, summed from the athlete's Redis activity index on each request.
+
+## Ingesting activities
+
+Activities are stored twice (`server/ingest.py`):
+
+- **Bucket (source of truth):** each activity in full, as Strava sent it, gzipped:
+  `athletes/{athlete}/activities/{activity}/activity.json.gz` (DetailedActivity) and `.../streams.json.gz`
+  (every stream type recorded). GPX exports are built from these.
+- **Redis index (derived, rebuildable):** `athlete:{id}:activities`, one compact `ActivitySummary` per activity
+  (sport type, local start date, elevation, distance, moving time, Strava's summary polyline). Stats read only this.
+
+They get there three ways:
+
+- **Webhooks:** Strava has one subscription per app, delivering events for every athlete who authorized it
+  (`/oauth2/callback` and startup make sure it exists). New and edited activities are archived and indexed.
+- **Bulk import** (`POST /api/import`, the button on `/`): lists every activity (200 per request) into the
+  index first, so stats work within seconds, then archives each one not yet in the bucket (two requests each).
+  Progress is saved in `athlete:{id}:import` after every activity; imports running when the server stops resume
+  at startup (`imports:running`).
+- **`POST /api/activity/{id}/persist`**, for one activity.
+
+Strava's rate limits apply to the whole app (by default about 100 read requests per 15 minutes and 1,000 per
+day). `StravaClient`'s `RateLimiter` tracks usage from every response's headers; imports run "in the background",
+waiting for the next window when usage gets within 10% of a limit (and retrying after a 429), so webhooks and
+pages keep working. A large history therefore takes a day or more to archive in full.
+
+The former layout (`activities/{athlete}/metadata/{id}.json` and `tracks/{id}.gpx`, from the Go server) is no
+longer written. Once an athlete's import has finished, `skintrackr migrate-legacy --athlete N` deletes it: it
+first checks that every activity in it is archived in the new layout (`--allow-missing` for activities since
+deleted on Strava).
 
 At startup the server makes sure a Strava webhook subscription exists (creating one pointing at
 `$APP_BASE_URL/subscriptions/callback` if not), in the background.
@@ -69,19 +111,21 @@ skintrackr/
   crypto.py          JWTs (PyJWT, HS256) and NaCl secretbox encryption (PyNaCl)
   models.py          attrs types for Strava data, and the shared cattrs converter
   gpx.py             GPX 1.1 documents from activity streams
+  vert.py            year-to-date vert from an athlete's activity index
   logging.py         JSON-lines logging (like Go's slog); structured context via `extra=`
   clients/
     strava.py        StravaClient: every Strava request (OAuth, subscriptions, activities, streams)
     store.py         Store: every Redis operation (tokens, OAuth state, JWT revocation)
-    blob_store.py    BlobStore: every bucket operation, and persist_activity
+    blob_store.py    BlobStore: every bucket operation; the activity archive layout
   server/
     app.py           create_app(): routes, the frontend build, lifespan, error handlers
     services.py      Services shared by handlers (on app.state), and background tasks
+    ingest.py        ingesting activities: webhooks, bulk imports, removal
     auth.py          authenticate_request(): bearer token -> AuthTokenInfo
     errors.py        `{"message": ...}` error responses and fail_with()
     oauth2.py  webhooks.py  token_api.py  api.py    route handlers
   cli/               click commands: serve, strava-debug
-tests/               pytest; fakes for Strava (httpx.MockTransport), Redis (fakeredis) and S3 (botocore Stubber)
+tests/               pytest; fakes for Strava (httpx.MockTransport), Redis (fakeredis) and S3 (moto)
 ```
 
 Strava requests go only through `StravaClient`, Redis only through `Store`, the bucket only through
@@ -97,8 +141,8 @@ the Go server stored (tokens, issued JWTs, archived activities) keeps working:
 - **Encryption:** NaCl secretbox keyed by the first 32 bytes of hex-decoded `APP_SECRET`, stored as
   base64(nonce || box).
 - **JWTs:** HS256 over `APP_SECRET` with the claims `athlete_id`, `expires_at`, `jti`, `exp`, `iat` and `nbf`.
-- **Blob keys:** `activities/{athlete}/metadata/{activity}.json` (the same fields as Go's `StravaActivity`) and
-  `activities/{athlete}/tracks/{activity}.gpx`.
+- **Blob keys:** the Go server's `activities/{athlete}/metadata/{activity}.json` and `tracks/{activity}.gpx` are
+  replaced by the layout above; `migrate-legacy` deletes them once they're re-archived.
 
 The tests check this against fixtures produced by the Go code (`tests/test_crypto.py`, `tests/test_gpx.py`).
 

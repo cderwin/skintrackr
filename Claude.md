@@ -18,16 +18,18 @@ Paths below are relative to `python/`.
 2. **skintrackr/server/services.py** - `Services` (config, `Store`, `StravaClient`, `BlobStore`) on `app.state`, and tracked background tasks (`spawn`)
 3. **skintrackr/clients/strava.py** - ALL Strava API interactions via `StravaClient`
 4. **skintrackr/clients/store.py** - ALL Redis operations and token management via `Store`
-5. **skintrackr/clients/blob_store.py** - ALL blob-storage (S3-compatible) operations via `BlobStore`; orchestrates `persist_activity` (download from Strava → upload to bucket)
+5. **skintrackr/clients/blob_store.py** - ALL blob-storage (S3-compatible) operations via `BlobStore`, and the archive layout; `archive_activity` downloads an activity and its streams from Strava and uploads them gzipped
 6. **skintrackr/server/oauth2.py** - OAuth flow handlers
 7. **skintrackr/server/webhooks.py** - Webhook subscription management and inbound push-event handling
-8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`)
+8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`)
+   **skintrackr/server/ingest.py** - Ingesting activities into the bucket and the Redis index: `ingest_activity`, bulk imports (`start_import`, resumed at startup), `remove_activity`/`remove_athlete`
 9. **skintrackr/server/token_api.py** - API token issue/verify/revoke handlers; **server/auth.py** has `authenticate_request`
 10. **skintrackr/crypto.py** - JWT signing/verification and NaCl secretbox encryption
 11. **skintrackr/config.py** - Environment configuration (`Config`, `BlobStorageConfig`)
 12. **skintrackr/server/errors.py** - `{"message": ...}` error responses and `fail_with()`
 13. **skintrackr/models.py**, **gpx.py**, **logging.py** - attrs types + cattrs converter, GPX generation, JSON-lines logging
-14. **skintrackr/cli/** - click commands: `serve`, `strava-debug`
+14. **skintrackr/vert.py** - `year_to_date()`: year-to-date vert from an athlete's activity index
+15. **skintrackr/cli/** - click commands: `serve`, `strava-debug`, `migrate-legacy`
 
 ### Architecture Rules
 
@@ -45,11 +47,12 @@ Paths below are relative to `python/`.
 
 3. **All blob-storage operations MUST go through `BlobStore` in `clients/blob_store.py`**
    - A boto3 `s3` client against the S3-compatible endpoint in `BlobStorageConfig`, built by `BlobStore.build()`; blocking calls run in `asyncio.to_thread`
-   - `persist_activity` is the entry point: it fetches the activity and GPX track via `StravaClient`, then uploads them under `activities/{athleteId}/...`
+   - `archive_activity` is the entry point: it fetches the activity and all its streams via `StravaClient`, then uploads them (gzipped, as received) under `athletes/{athleteId}/activities/{activityId}/`
    - Never create a boto3 client or make raw bucket calls outside of `BlobStore`
 
 4. **Authentication**
    - Protected handlers MUST call `authenticate_request()` (in `server/auth.py`) first and use the returned `athlete_id`
+   - It accepts the API token as a bearer header (CLI) or the HttpOnly `skintrackr_session` cookie (browser, set by `/oauth2/callback`); issue tokens with `issue_token()` and build the cookie with `session_cookie()`
    - JWT and encryption primitives live in `crypto.py`; do not hand-roll token or crypto logic elsewhere
 
 5. **Handler Logic Flow**
@@ -74,8 +77,10 @@ Strava API      Redis           S3-compatible bucket
      Response
 ```
 
-Webhook activity `create`/`update` events trigger `BlobStore.persist_activity`
-in a background task (`services.spawn`) so the webhook is acknowledged promptly.
+Activities are stored in full in the bucket (source of truth) and as summaries in a Redis index
+(`athlete:{id}:activities`, what stats read). Webhook events and bulk imports (`server/ingest.py`) write both,
+in background tasks (`services.spawn`): webhooks are acknowledged promptly, and imports wait out Strava's
+app-wide rate limits (`RateLimiter` in `strava.py`; use `StravaClient.in_background()` for background work).
 
 ## Git Workflow & Best Practices
 
@@ -209,6 +214,7 @@ Required environment variables (see `.env.example` and `python/README.md`):
 - `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` - From Strava API settings
 - `UPSTASH_REDIS_URL` - Redis connection string
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` - Keys for the S3-compatible blob store
+- `VITE_MAPTILER_KEY` - (frontend build only) public MapTiler key for the map page; a Docker build arg, from `.env` locally and a GitHub secret in the deploy workflow
 
 The blob-storage bucket name and endpoint are defaults in `BlobStorageConfig` in `config.py`.
 
@@ -223,7 +229,10 @@ just web-typecheck   # vue-tsc (part of `just check`)
 
 - Pages are views in `frontend/src/views/`, registered in `frontend/src/router.ts`; shared pieces go in `src/components/` (e.g. `PageCard.vue`), global styles in `src/assets/main.css`
 - Server routes (`/oauth2/...`, `/token/...`, `/api/...`) are plain links or `fetch` calls, not router links; add any new top-level server prefix to the proxy list in `vite.config.ts`
-- The OAuth callback redirects to the `/connected` route (`CONFIRMATION_PAGE` in `server/oauth2.py`); keep the two in sync
+- The OAuth callback signs the browser in (session cookie) and redirects to the `/connected` route (`CONFIRMATION_PAGE` in `server/oauth2.py`); keep the two in sync
+- Call the server through `src/api.ts` (it sends the cookie; 401/403 become `SignedOutError`); `useSignedIn()` tells whether the browser is signed in
+- Per-browser preferences (vert goal, units) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()`
+- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`)
 - Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines
@@ -231,7 +240,7 @@ just web-typecheck   # vue-tsc (part of `just check`)
 ### Unit Test Requirements
 
 1. **All new features MUST have unit tests** in `python/tests/test_<module>.py`
-2. **Never make real network calls** - use the fakes in `python/tests/conftest.py`: `FakeStrava` (`httpx.MockTransport`), fakeredis, and `FakeBucket` (botocore `Stubber`), plus the `client` fixture (Litestar `TestClient`)
+2. **Never make real network calls** - use the fakes in `python/tests/conftest.py`: `FakeStrava` (`httpx.MockTransport`), fakeredis, and `FakeBucket` (an in-memory moto bucket), plus the `client` fixture (Litestar `TestClient`)
 3. Use `pytest.mark.parametrize` for multiple scenarios
 4. Critical paths (auth, token management) must be well-tested; keep the Go-produced compatibility fixtures in `tests/test_crypto.py` and `tests/test_gpx.py` passing
 
@@ -266,7 +275,7 @@ When a new feature would otherwise duplicate existing behavior, refactor the sha
    - ❌ Never access Redis directly outside `Store`
 
 3. **Blob Storage**
-   - ✅ Use `BlobStore` methods (e.g. `persist_activity()`)
+   - ✅ Use `BlobStore` methods (e.g. `archive_activity()`)
    - ❌ Never create a boto3 client or call the bucket directly outside `BlobStore`
 
 4. **Configuration**
@@ -278,7 +287,7 @@ When a new feature would otherwise duplicate existing behavior, refactor the sha
    - Include relevant context (athlete_id, activity_id, etc.)
    - Log errors before returning or raising them (`fail_with` does this for handlers)
 
-6. **Stored formats are frozen** - Redis keys, ciphertext layout, JWT claims and blob keys/metadata must stay compatible with existing data
+6. **Stored formats are frozen** - Redis keys (including `athlete:{id}:activities`/`:import`), ciphertext layout, JWT claims and the bucket layout (`athletes/{id}/activities/{id}/activity.json.gz` and `streams.json.gz`, Strava's JSON as received) must stay compatible with existing data
 
 ## Common Tasks
 
@@ -307,7 +316,7 @@ async def get_athlete(self) -> Athlete:
 
 1. Add a method to `BlobStore` in `clients/blob_store.py`, reusing `put()` and the existing key helpers
 2. Log errors and raise them to the caller
-3. Write tests (stub the S3 calls with `FakeBucket`)
+3. Write tests (against `FakeBucket`'s in-memory bucket)
 
 ### Adding New HTTP Handlers
 
