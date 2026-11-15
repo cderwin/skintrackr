@@ -12,7 +12,7 @@ from attrs import evolve, field, frozen
 
 from skintrackr.gpx import GpxMetadata, build_gpx
 from skintrackr.logging import get_logger
-from skintrackr.models import RawStream, StravaActivity, StreamPoint, Subscription, TokenResponse, loads
+from skintrackr.models import ActivitySummary, RawStream, StravaActivity, StreamPoint, Subscription, TokenResponse, loads
 
 logger = get_logger(__name__)
 
@@ -23,6 +23,8 @@ SUBSCRIPTIONS_URL = f"{API_URL}/push_subscriptions"
 SCOPE = "read,activity:read_all"
 # streams requested for GPX exports
 STREAM_KEYS = "latlng,altitude,time"
+# the most activities Strava lists per page
+ACTIVITIES_PER_PAGE = 200
 
 # stream type -> the StreamPoint attribute it fills (latlng fills two, so it's handled separately)
 _STREAM_ATTRIBUTES = {
@@ -153,6 +155,21 @@ class StravaClient:
         return _decode(await self.request("POST", SUBSCRIPTIONS_URL, form=form), Subscription)
 
     # --- activities
+
+    async def list_activities(self, after: datetime, before: datetime | None = None) -> list[ActivitySummary]:
+        """The athlete's activities that started between `after` and `before` (all pages)."""
+        params = {"after": str(int(after.timestamp())), "per_page": str(ACTIVITIES_PER_PAGE)}
+        if before is not None:
+            params["before"] = str(int(before.timestamp()))
+        activities: list[ActivitySummary] = []
+        page = 1
+        while True:
+            body = await self.request("GET", f"{API_URL}/athlete/activities", params={**params, "page": str(page)})
+            batch = _decode(body, list[ActivitySummary])
+            activities.extend(batch)
+            if len(batch) < ACTIVITIES_PER_PAGE:
+                return activities
+            page += 1
 
     async def get_activity(self, activity_id: str) -> StravaActivity:
         """Fetch an activity's details."""

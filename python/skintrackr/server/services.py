@@ -12,6 +12,7 @@ from skintrackr.clients.store import Store
 from skintrackr.clients.strava import StravaClient
 from skintrackr.config import Config
 from skintrackr.logging import get_logger
+from skintrackr.vert import VertCache
 
 logger = get_logger(__name__)
 
@@ -25,6 +26,7 @@ class Services:
         store: Redis storage.
         strava: App-level Strava client (no athlete token); `strava_for` derives per-athlete clients.
         blob_store: Activity archive.
+        vert: Athletes' year-to-date vert, cached in memory.
         background: Tasks running after their request was answered; held so they aren't garbage collected.
     """
 
@@ -32,6 +34,7 @@ class Services:
     store: Store
     strava: StravaClient
     blob_store: BlobStore
+    vert: VertCache = field(factory=VertCache)
     background: set[asyncio.Task[None]] = field(factory=set)
 
     async def strava_for(self, athlete_id: int) -> StravaClient:

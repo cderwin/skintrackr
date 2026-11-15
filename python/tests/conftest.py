@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ from skintrackr.config import BlobStorageConfig, Config
 from skintrackr.crypto import generate_jwt
 from skintrackr.models import TokenInfo
 from skintrackr.server.app import create_app
+from skintrackr.server.auth import SESSION_COOKIE
 from skintrackr.server.services import Services
 
 SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -55,6 +56,15 @@ STREAMS = [
 Route = Callable[[httpx.Request], httpx.Response]
 
 
+def _unix(iso: str) -> int:
+    return int(datetime.fromisoformat(iso).timestamp())
+
+
+def summary(activity_id: int, day: str, vert: float, sport_type: str = "BackcountrySki") -> dict[str, Any]:
+    """An activity as Strava lists it, starting at 9am local time on `day` (YYYY-MM-DD)."""
+    return {"id": activity_id, "sport_type": sport_type, "start_date_local": f"{day}T09:00:00Z", "total_elevation_gain": vert}
+
+
 class FakeStrava:
     """A fake Strava API: canned responses by method and path, and a record of every request."""
 
@@ -70,6 +80,17 @@ class FakeStrava:
         """Serve an activity and its streams."""
         self.add("GET", f"/api/v3/activities/{activity['id']}", activity)
         self.add("GET", f"/api/v3/activities/{activity['id']}/streams", streams)
+
+    def add_activities(self, activities: list[dict[str, Any]]) -> None:
+        """Serve the athlete's activity list, filtered by `after` and paged like Strava (by `start_date_local`)."""
+
+        def route(request: httpx.Request) -> httpx.Response:
+            after = int(request.url.params.get("after", 0))
+            matching = [a for a in activities if _unix(a["start_date_local"]) > after]
+            per_page, page = int(request.url.params["per_page"]), int(request.url.params["page"])
+            return httpx.Response(200, json=matching[(page - 1) * per_page : page * per_page])
+
+        self.routes[("GET", "/api/v3/athlete/activities")] = route
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -190,6 +211,11 @@ def issue_api_token(server: FakeServer, athlete_id: int = ATHLETE_ID) -> str:
     jwt, claims = generate_jwt(athlete_id, SECRET, timedelta(days=1))
     with_store(server, lambda s: s.save_jwt(claims))
     return jwt
+
+
+def session(token: str) -> dict[str, str]:
+    """Headers sending `token` in the session cookie (the test client is on http, so it won't keep Secure cookies)."""
+    return {"Cookie": f"{SESSION_COOKIE}={token}"}
 
 
 def bearer(token: str) -> dict[str, str]:

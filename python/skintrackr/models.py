@@ -69,6 +69,16 @@ class StravaActivity:
 
 
 @define
+class ActivitySummary:
+    """An activity as Strava lists it (`GET /athlete/activities`): the parts the vert stats use."""
+
+    id: int = 0
+    sport_type: str = ""
+    start_date_local: str = ""
+    total_elevation_gain: float = 0.0
+
+
+@define
 class RawStream:
     """One stream from Strava's activity streams endpoint (`data` holds one value per sample)."""
 

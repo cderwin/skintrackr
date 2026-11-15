@@ -1,13 +1,14 @@
 import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 
-from skintrackr.clients.strava import AUTH_URL, SCOPE, StravaClient, StravaError, merge_streams
+from skintrackr.clients.strava import ACTIVITIES_PER_PAGE, AUTH_URL, SCOPE, StravaClient, StravaError, merge_streams
 from skintrackr.models import RawStream, StravaActivity
-from tests.conftest import ACTIVITY, ACTIVITY_ID, ATHLETE_ID, FakeStrava
+from tests.conftest import ACTIVITY, ACTIVITY_ID, ATHLETE_ID, FakeStrava, summary
 
 
 def form(request: httpx.Request) -> dict[str, str]:
@@ -240,3 +241,21 @@ def test_export_activity_gpx_stream_error(strava: FakeStrava) -> None:
     with pytest.raises(StravaError, match="invalid status 404"):
         asyncio.run(strava.client("t").export_activity_gpx(activity))
 
+
+
+def test_list_activities_pages_through_results(strava: FakeStrava) -> None:
+    strava.add_activities([summary(i, "2026-01-02", 1.0) for i in range(ACTIVITIES_PER_PAGE + 1)])
+    after = datetime(2026, 1, 1, tzinfo=UTC)
+    activities = asyncio.run(strava.client("athlete-token").list_activities(after))
+
+    assert [a.id for a in activities] == list(range(ACTIVITIES_PER_PAGE + 1))
+    pages = [r.url.params for r in strava.requests]
+    assert [p["page"] for p in pages] == ["1", "2"]
+    assert all(p["after"] == str(int(after.timestamp())) and "before" not in p for p in pages)
+
+
+def test_list_activities_before(strava: FakeStrava) -> None:
+    strava.add_activities([])
+    before = datetime(2026, 2, 1, tzinfo=UTC)
+    asyncio.run(strava.client().list_activities(datetime(2026, 1, 1, tzinfo=UTC), before))
+    assert strava.requests[0].url.params["before"] == str(int(before.timestamp()))

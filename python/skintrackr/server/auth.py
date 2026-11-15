@@ -1,17 +1,27 @@
-"""Authenticating API requests with skintrackr's bearer tokens (JWTs from `/token/callback`)."""
+"""Issuing skintrackr's API tokens (JWTs) and authenticating requests with them.
+
+A request carries its token as a bearer token (`/token/callback` issues those, for the CLI) or in the
+session cookie (set by `/oauth2/callback`, for the browser).
+"""
 
 import time
+from datetime import timedelta
 from typing import Self
 
 from attrs import frozen
 from litestar import Request
+from litestar.datastructures import Cookie
 from litestar.exceptions import HTTPException, NotAuthorizedException, PermissionDeniedException
 
-from skintrackr.crypto import InvalidTokenError, TokenClaims, verify_jwt
+from skintrackr.crypto import InvalidTokenError, TokenClaims, generate_jwt, verify_jwt
 from skintrackr.logging import get_logger
+from skintrackr.server.errors import fail_with
 from skintrackr.server.services import Services
 
 logger = get_logger(__name__)
+
+TOKEN_LIFETIME = timedelta(days=30)
+SESSION_COOKIE = "skintrackr_session"
 
 
 class AuthenticationError(Exception):
@@ -56,6 +66,39 @@ def bearer_token(request: Request) -> str:
     return header.removeprefix("Bearer ")
 
 
+def request_token(request: Request) -> str:
+    """The request's API token: its bearer token, or else its session cookie.
+
+    Raises:
+        NotAuthorizedException: (401) Neither is present, or the header isn't a bearer token.
+    """
+    if "authorization" not in request.headers and (cookie := request.cookies.get(SESSION_COOKIE)):
+        return cookie
+    return bearer_token(request)
+
+
+def session_cookie(token: str | None) -> Cookie:
+    """The session cookie holding `token`; `None` makes a cookie that clears it.
+
+    HttpOnly keeps page scripts from reading it, and SameSite=Lax keeps other sites' POSTs from sending it.
+    """
+    max_age = int(TOKEN_LIFETIME.total_seconds()) if token else 0
+    return Cookie(key=SESSION_COOKIE, value=token or "", max_age=max_age, secure=True, httponly=True, samesite="lax")
+
+
+async def issue_token(services: Services, athlete_id: int) -> str:
+    """Sign a new API token for an athlete and record it (so it can be revoked); returns the JWT.
+
+    Raises:
+        HTTPException: (500) Signing or recording it failed.
+    """
+    with fail_with("Failed to generate access token"):
+        jwt, claims = generate_jwt(athlete_id, services.config.secret, TOKEN_LIFETIME)
+    with fail_with("Failed to save token metadata", athlete_id=athlete_id):
+        await services.store.save_jwt(claims)
+    return jwt
+
+
 async def authenticate_token(services: Services, token: str) -> AuthTokenInfo:
     """Verify a token's signature, expiry and revocation status.
 
@@ -79,13 +122,13 @@ async def authenticate_token(services: Services, token: str) -> AuthTokenInfo:
 
 
 async def authenticate_request(request: Request, services: Services) -> AuthTokenInfo:
-    """Authenticate a request by its bearer token; every protected handler calls this first.
+    """Authenticate a request by its API token (`request_token`); every protected handler calls this first.
 
     Raises:
-        NotAuthorizedException: (401) No bearer token.
+        NotAuthorizedException: (401) No token.
         PermissionDeniedException: (403) The token is invalid, expired or revoked.
     """
-    token = bearer_token(request)
+    token = request_token(request)
     try:
         return await authenticate_token(services, token)
     except AuthenticationError as e:

@@ -7,10 +7,10 @@ Routes:
 | `GET /assets/*` | the frontend's hashed bundles (cached for a year) |
 | any other `GET` | a file from the frontend build, else its `index.html` (the SPA routes the path) |
 | `GET /healthcheck` | `{"ok": true}` |
-| `GET /oauth2/connect`, `GET /oauth2/callback` | connect a Strava account (`oauth2.py`) |
+| `GET /oauth2/connect`, `GET /oauth2/callback`, `POST /oauth2/logout` | connect a Strava account and sign the browser in and out (`oauth2.py`) |
 | `GET/POST /subscriptions/callback` | Strava webhooks (`webhooks.py`) |
 | `GET /token/new`, `GET /token/callback`, `POST /token/verify`, `POST /token/revoke`, `GET /api/strava-token` | API tokens (`token_api.py`) |
-| `GET /api/activity/{id}/export`, `POST /api/activity/{id}/persist` | activities (`api.py`) |
+| `GET /api/activity/{id}/export`, `POST /api/activity/{id}/persist`, `GET /api/stats/vert` | activities (`api.py`) |
 """
 
 import os
