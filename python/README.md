@@ -44,7 +44,8 @@ Missing or invalid settings fail at startup (`ConfigError`).
 | any other `GET` | | A file from the frontend build (e.g. `/favicon.svg`), else its `index.html`, uncached, for the SPA to route |
 | `GET /healthcheck` | | `{"ok": true}` |
 | `GET /oauth2/connect` | | Redirect to Strava to connect an account |
-| `GET /oauth2/callback` | | Store the athlete's tokens; redirect to the frontend's `/connected` page with the token in the fragment |
+| `GET /oauth2/callback` | | Store the athlete's tokens, sign the browser in (session cookie, 30 days), and redirect to the frontend's `/connected` page |
+| `POST /oauth2/logout` | | Revoke the browser's session token (if valid) and clear the cookie |
 | `GET /subscriptions/callback` | `hub.verify_token` | Webhook verification: echoes `hub.challenge` |
 | `POST /subscriptions/callback` | | Webhook events; activity `create`/`update` archive the activity in the background |
 | `GET /token/new` | | Start the OAuth flow that issues an API token (with CSRF `state`) |
@@ -54,9 +55,19 @@ Missing or invalid settings fail at startup (`ConfigError`).
 | `GET /api/strava-token` | bearer | The athlete's Strava token (refreshed if expired) |
 | `GET /api/activity/{id}/export` | bearer | The activity as a GPX download |
 | `POST /api/activity/{id}/persist` | bearer | Archive the activity: `{"ok": true, "activityId": id}` |
+| `GET /api/stats/vert?today=YYYY-MM-DD` | bearer | On-foot vert from Jan 1 to today's date, this year and the 5 before: `{"as_of", "years": [{"year", "vert_m"}, ...]}` |
 
-Errors are `{"message": "..."}`. A missing or malformed `Authorization` header is 401; an invalid, expired or
-revoked token is 403 on `/api/activity/...` and 401 on the `/token/...` and `/api/strava-token` routes.
+"bearer" routes take the API token as `Authorization: Bearer <token>` (the CLI's, from `/token/callback`) or, when
+there's no `Authorization` header, from the `skintrackr_session` cookie (the browser's: HttpOnly, Secure,
+SameSite=Lax). The token itself lives only with the client; Redis keeps just its `jwt:jti:` record, so it can be revoked.
+
+Errors are `{"message": "..."}`. A missing token or malformed `Authorization` header is 401; an invalid, expired or
+revoked token is 403 on `/api/activity/...` and `/api/stats/...`, and 401 on the `/token/...` and `/api/strava-token` routes.
+
+`/api/stats/vert` counts every sport except cycling and lift-served skiing (`EXCLUDED_SPORT_TYPES` in `vert.py`),
+by each activity's local start date. Totals are cached in memory per athlete (least recently used dropped beyond
+256): the first request of a day fetches all six years of activities, and later ones fetch only the last two
+weeks and merge them into the current year. The cache is lost on restart.
 
 At startup the server makes sure a Strava webhook subscription exists (creating one pointing at
 `$APP_BASE_URL/subscriptions/callback` if not), in the background.
@@ -69,6 +80,7 @@ skintrackr/
   crypto.py          JWTs (PyJWT, HS256) and NaCl secretbox encryption (PyNaCl)
   models.py          attrs types for Strava data, and the shared cattrs converter
   gpx.py             GPX 1.1 documents from activity streams
+  vert.py            VertCache: year-to-date vert per athlete, cached in memory
   logging.py         JSON-lines logging (like Go's slog); structured context via `extra=`
   clients/
     strava.py        StravaClient: every Strava request (OAuth, subscriptions, activities, streams)

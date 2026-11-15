@@ -6,7 +6,7 @@ JWT-authenticated API, GPX export, and activity archiving (metadata + GPX track)
 | Directory | |
 | --- | --- |
 | [`python/`](python/README.md) | The backend: Litestar server and CLI (uv project). Configuration, routes and layout are in its README. |
-| `frontend/` | The frontend: a Vue 3 + Vite + TypeScript SPA. The server serves its build (`frontend/dist`) in production. |
+| `frontend/` | The frontend: a Vue 3 + Vite + TypeScript SPA (landing page, season vert stats, 3D terrain map). The server serves its build (`frontend/dist`) in production. |
 
 ## Commands
 
@@ -24,7 +24,8 @@ just web-dev    # frontend dev server with hot reload on :5173 (proxies server r
 
 ```sh
 cp .env.example .env   # then set STRAVA_CLIENT_ID/SECRET (https://www.strava.com/settings/api),
-                       # APP_SECRET (openssl rand -hex 32) and the AWS_* blob-storage keys
+                       # APP_SECRET (openssl rand -hex 32), the AWS_* blob-storage keys,
+                       # and VITE_MAPTILER_KEY for the map (https://cloud.maptiler.com/account/keys/)
 just py-sync
 just web-install
 just dev-up            # or: run Redis yourself, set UPSTASH_REDIS_URL in .env, and `just py-serve`
@@ -35,4 +36,5 @@ just dev-up            # or: run Redis yourself, set UPSTASH_REDIS_URL in .env, 
 - **CI** (`.github/workflows/ci.yml`) runs `just test` and `just check` on every pull request.
 - **Deploy** (`.github/workflows/fly-deploy.yml`) runs CI on every push to `main`, then deploys to Fly.io if it passes. `fly deploy` does the same by hand.
 
-Secrets are set with `fly secrets set` (the required variables are listed in `python/README.md`).
+Secrets are set with `fly secrets set` (the required variables are listed in `python/README.md`). The map's
+`VITE_MAPTILER_KEY` is a GitHub Actions secret instead: it's baked into the frontend at build time.

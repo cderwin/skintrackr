@@ -27,7 +27,8 @@ Paths below are relative to `python/`.
 11. **skintrackr/config.py** - Environment configuration (`Config`, `BlobStorageConfig`)
 12. **skintrackr/server/errors.py** - `{"message": ...}` error responses and `fail_with()`
 13. **skintrackr/models.py**, **gpx.py**, **logging.py** - attrs types + cattrs converter, GPX generation, JSON-lines logging
-14. **skintrackr/cli/** - click commands: `serve`, `strava-debug`
+14. **skintrackr/vert.py** - `VertCache` (on `Services.vert`): year-to-date vert per athlete, an in-memory LRU fed by `StravaClient.list_activities`
+15. **skintrackr/cli/** - click commands: `serve`, `strava-debug`
 
 ### Architecture Rules
 
@@ -50,6 +51,7 @@ Paths below are relative to `python/`.
 
 4. **Authentication**
    - Protected handlers MUST call `authenticate_request()` (in `server/auth.py`) first and use the returned `athlete_id`
+   - It accepts the API token as a bearer header (CLI) or the HttpOnly `skintrackr_session` cookie (browser, set by `/oauth2/callback`); issue tokens with `issue_token()` and build the cookie with `session_cookie()`
    - JWT and encryption primitives live in `crypto.py`; do not hand-roll token or crypto logic elsewhere
 
 5. **Handler Logic Flow**
@@ -209,6 +211,7 @@ Required environment variables (see `.env.example` and `python/README.md`):
 - `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` - From Strava API settings
 - `UPSTASH_REDIS_URL` - Redis connection string
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` - Keys for the S3-compatible blob store
+- `VITE_MAPTILER_KEY` - (frontend build only) public MapTiler key for the map page; a Docker build arg, from `.env` locally and a GitHub secret in the deploy workflow
 
 The blob-storage bucket name and endpoint are defaults in `BlobStorageConfig` in `config.py`.
 
@@ -223,7 +226,10 @@ just web-typecheck   # vue-tsc (part of `just check`)
 
 - Pages are views in `frontend/src/views/`, registered in `frontend/src/router.ts`; shared pieces go in `src/components/` (e.g. `PageCard.vue`), global styles in `src/assets/main.css`
 - Server routes (`/oauth2/...`, `/token/...`, `/api/...`) are plain links or `fetch` calls, not router links; add any new top-level server prefix to the proxy list in `vite.config.ts`
-- The OAuth callback redirects to the `/connected` route (`CONFIRMATION_PAGE` in `server/oauth2.py`); keep the two in sync
+- The OAuth callback signs the browser in (session cookie) and redirects to the `/connected` route (`CONFIRMATION_PAGE` in `server/oauth2.py`); keep the two in sync
+- Call the server through `src/api.ts` (it sends the cookie; 401/403 become `SignedOutError`); `useSignedIn()` tells whether the browser is signed in
+- Per-browser preferences (vert goal, units) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()`
+- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`)
 - Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines

@@ -7,7 +7,9 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
-RUN npm run build
+# Public MapTiler key; Vite inlines it into the bundle. Without it /map shows a missing-key message.
+ARG VITE_MAPTILER_KEY=""
+RUN VITE_MAPTILER_KEY="$VITE_MAPTILER_KEY" npm run build
 
 
 # --- python: locked dependencies + the project in /app/python/.venv
