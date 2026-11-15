@@ -1,7 +1,8 @@
 # Skintrackr
 
-A webhook server for Strava activity notifications: OAuth with Strava, encrypted token storage in Redis, a
-JWT-authenticated API, GPX export, and activity archiving (metadata + GPX track) to S3-compatible storage.
+Backcountry Ski Tracker: archives athletes' [intervals.icu](https://intervals.icu) activities to S3-compatible
+storage, keeps them in sync, and shows season vert stats and a 3D map. Athletes connect with their intervals.icu
+API key (stored encrypted in Redis); a JWT-authenticated API also exports activities as GPX.
 
 | Directory | |
 | --- | --- |
@@ -23,9 +24,9 @@ just web-dev    # frontend dev server with hot reload on :5173 (proxies server r
 ## Local setup
 
 ```sh
-cp .env.example .env   # then set STRAVA_CLIENT_ID/SECRET (https://www.strava.com/settings/api),
-                       # APP_SECRET (openssl rand -hex 32), the AWS_* blob-storage keys,
-                       # and VITE_MAPTILER_KEY for the map (https://cloud.maptiler.com/account/keys/)
+cp .env.example .env   # then set APP_SECRET (openssl rand -hex 32), the AWS_* blob-storage keys,
+                       # and VITE_MAPTILER_KEY for the map (https://cloud.maptiler.com/account/keys/);
+                       # athletes connect with their own intervals.icu API key on /connect
 just py-sync
 just web-install
 just dev-up            # or: run Redis yourself, set UPSTASH_REDIS_URL in .env, and `just py-serve`

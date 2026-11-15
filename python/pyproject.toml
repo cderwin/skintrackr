@@ -1,7 +1,7 @@
 [project]
 name = "skintrackr"
 version = "0.1.0"
-description = "Strava webhook server: OAuth, encrypted token storage, GPX export and activity archiving"
+description = "intervals.icu activity archive and season stats: encrypted API key storage, periodic sync, GPX export"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
