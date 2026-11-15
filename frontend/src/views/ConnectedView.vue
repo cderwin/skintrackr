@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import { INTERVALS_SETTINGS_URL } from '@/api'
 import AppLinks from '@/components/AppLinks.vue'
+import ImportPanel from '@/components/ImportPanel.vue'
 import PageCard from '@/components/PageCard.vue'
 
 const features = [
-  "We'll notify you when new activities are uploaded",
-  'Your ski stats are being tracked automatically',
+  'Import your history below to see your season stats',
+  'New activities sync automatically',
   "You're all set for the season!",
 ]
 </script>
@@ -13,15 +15,17 @@ const features = [
   <PageCard
     icon="✓"
     title="Successfully Connected!"
-    subtitle="Your Strava account has been linked to Backcountry Ski Tracker"
+    subtitle="Your intervals.icu account is connected to Backcountry Ski Tracker"
     :features="features"
     success
   >
     <AppLinks />
+    <ImportPanel />
 
     <template #disclaimer>
-      You can revoke this app's access at any time by visiting your
-      <a class="brand-link" href="https://www.strava.com/settings/apps" target="_blank">Strava settings</a> page.
+      You can disconnect at any time from Settings on the stats page, which deletes everything stored for you. To
+      revoke the key itself, generate a new one in your
+      <a class="brand-link" :href="INTERVALS_SETTINGS_URL" target="_blank" rel="noopener">intervals.icu settings</a>.
     </template>
   </PageCard>
 </template>

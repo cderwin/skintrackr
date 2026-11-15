@@ -28,16 +28,30 @@ export interface ImportStatus {
   /** Activities archived in full (details and streams), out of tracks_total. */
   tracks_done: number
   tracks_total: number
+  /** Activities intervals.icu doesn't serve through its API (synced from Strava). */
+  skipped: number
   error: string
 }
 
-export interface StravaToken {
-  access_token: string
-  expires_at: number
+export interface Athlete {
+  athlete_id: string
+  name: string
 }
 
-async function call<T>(method: 'GET' | 'POST', path: string): Promise<T> {
-  const response = await fetch(path, { method, credentials: 'same-origin' })
+/** How far back, by start date, the server syncs automatically (its SYNC_WINDOW_DAYS default). */
+export const SYNC_WINDOW_DAYS = 30
+
+/** Where athletes find their intervals.icu API key. */
+export const INTERVALS_SETTINGS_URL = 'https://intervals.icu/settings'
+
+async function call<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    credentials: 'same-origin',
+    ...(payload === undefined
+      ? {}
+      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  })
   if (response.status === 401 || response.status === 403) {
     throw new SignedOutError()
   }
@@ -57,12 +71,15 @@ function localDate(): string {
 
 export const api = {
   /** Resolves if the browser is signed in. */
-  verify: () => call<{ athlete_id: number }>('POST', '/token/verify'),
+  verify: () => call<{ athlete_id: string }>('POST', '/token/verify'),
+  /** Connect an intervals.icu account by its API key, and sign the browser in. */
+  connect: (apiKey: string) => call<Athlete>('POST', '/auth/connect', { api_key: apiKey }),
   vert: () => call<VertStats>('GET', `/api/stats/vert?today=${localDate()}`),
-  stravaToken: () => call<StravaToken>('GET', '/api/strava-token'),
   importStatus: () => call<ImportStatus>('GET', '/api/import'),
   startImport: () => call<ImportStatus>('POST', '/api/import'),
-  logout: () => call<{ ok: boolean }>('POST', '/oauth2/logout'),
+  logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
+  /** Delete everything stored for the athlete, and sign out. */
+  disconnect: () => call<{ ok: boolean }>('POST', '/auth/disconnect'),
 }
 
 /** Whether the browser is signed in: null until the server has answered. */
