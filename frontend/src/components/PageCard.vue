@@ -1,10 +1,11 @@
 <script setup lang="ts">
-// The card every page is laid out in: icon, title, subtitle, a ❄️ feature list, then the page's own content.
+// The card every page is laid out in: icon, title, subtitle, an optional ❄️ feature list, then the page's own
+// content and an optional disclaimer.
 defineProps<{
   icon: string
   title: string
   subtitle: string
-  features: string[]
+  features?: string[]
   success?: boolean
 }>()
 </script>
@@ -15,13 +16,13 @@ defineProps<{
     <h1>{{ title }}</h1>
     <p class="subtitle">{{ subtitle }}</p>
 
-    <ul class="features">
+    <ul v-if="features" class="features">
       <li v-for="feature in features" :key="feature">{{ feature }}</li>
     </ul>
 
     <slot />
 
-    <p class="disclaimer"><slot name="disclaimer" /></p>
+    <p v-if="$slots.disclaimer" class="disclaimer"><slot name="disclaimer" /></p>
   </main>
 </template>
 
