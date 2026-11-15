@@ -1,11 +1,11 @@
 """JWT signing/verification and symmetric encryption of stored tokens.
 
-Both are wire-compatible with the former Go server, so tokens and ciphertext it issued stay valid:
+Both formats are stored or handed out, so they must not change (tests pin them with fixed fixtures):
 
-- JWTs are HS256 over the raw `APP_SECRET` string, with the claims `athlete_id`, `expires_at`, `jti`, `exp`,
-  `iat` and `nbf`.
+- JWTs are HS256 over the raw `APP_SECRET` string, with the claims `athlete_id` (the intervals.icu athlete id,
+  a string), `expires_at`, `jti`, `exp`, `iat` and `nbf`.
 - Encryption is NaCl secretbox keyed by the first 32 bytes of hex-decoded `APP_SECRET`; the ciphertext is
-  base64(nonce || box), the layout of Go's `secretbox.Seal(nonce[:], ...)`.
+  base64(nonce || box).
 """
 
 import base64
@@ -20,7 +20,7 @@ from nacl.exceptions import CryptoError
 from nacl.secret import SecretBox
 
 JWT_ALGORITHM = "HS256"
-# Go's verifier accepts any HMAC signing method
+# any HMAC signing method is accepted
 _ACCEPTED_ALGORITHMS = ["HS256", "HS384", "HS512"]
 
 
@@ -37,13 +37,13 @@ class TokenClaims:
     """The claims of a skintrackr API token.
 
     Attributes:
-        athlete_id: Strava athlete the token acts for.
+        athlete_id: intervals.icu athlete the token acts for.
         issued_at: Unix time the token was issued.
         expires_at: Unix time the token expires.
         jti: Unique token id, the key for revocation.
     """
 
-    athlete_id: int
+    athlete_id: str
     issued_at: int
     expires_at: int
     jti: str
@@ -54,7 +54,7 @@ def generate_jti() -> str:
     return secrets.token_hex(32)
 
 
-def generate_jwt(athlete_id: int, secret: str, lifetime: timedelta, now: float | None = None) -> tuple[str, TokenClaims]:
+def generate_jwt(athlete_id: str, secret: str, lifetime: timedelta, now: float | None = None) -> tuple[str, TokenClaims]:
     """Sign a new API token.
 
     Args:
@@ -94,9 +94,14 @@ def verify_jwt(token: str, secret: str) -> TokenClaims:
         payload = jwt.decode(token, secret, algorithms=_ACCEPTED_ALGORITHMS)
     except jwt.PyJWTError as e:
         raise InvalidTokenError(str(e)) from e
-    athlete_id, expires_at, issued_at = (_int_claim(payload, k) for k in ("athlete_id", "expires_at", "iat"))
-    jti = payload.get("jti")
-    if athlete_id is None or expires_at is None or issued_at is None or not isinstance(jti, str) or not jti:
+    expires_at, issued_at = (_int_claim(payload, k) for k in ("expires_at", "iat"))
+    athlete_id, jti = payload.get("athlete_id"), payload.get("jti")
+    if (
+        expires_at is None
+        or issued_at is None
+        or not (isinstance(athlete_id, str) and athlete_id)
+        or not (isinstance(jti, str) and jti)
+    ):
         raise InvalidTokenError("token is missing required claims")
     return TokenClaims(athlete_id=athlete_id, issued_at=issued_at, expires_at=expires_at, jti=jti)
 
@@ -129,7 +134,7 @@ def encrypt(plaintext: str, hex_secret: str) -> str:
 
 
 def decrypt(ciphertext: str, hex_secret: str) -> str:
-    """Decrypt a string from `encrypt` (or the Go server's `Encrypt`).
+    """Decrypt a string from `encrypt`.
 
     Raises:
         DecryptionError: The ciphertext isn't valid base64, is too short, or fails authentication.

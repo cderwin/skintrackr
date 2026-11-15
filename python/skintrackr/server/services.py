@@ -9,7 +9,7 @@ from litestar.datastructures import State
 
 from skintrackr.clients.blob_store import BlobStore
 from skintrackr.clients.store import Store
-from skintrackr.clients.strava import StravaClient
+from skintrackr.clients.intervals import IntervalsClient
 from skintrackr.config import Config
 from skintrackr.logging import get_logger
 
@@ -23,20 +23,24 @@ class Services:
     Attributes:
         config: Server settings.
         store: Redis storage.
-        strava: App-level Strava client (no athlete token); `strava_for` derives per-athlete clients.
+        intervals: intervals.icu client without an API key; `intervals_for` derives per-athlete clients.
         blob_store: Activity archive.
         background: Tasks running after their request was answered; held so they aren't garbage collected.
     """
 
     config: Config
     store: Store
-    strava: StravaClient
+    intervals: IntervalsClient
     blob_store: BlobStore
     background: set[asyncio.Task[None]] = field(factory=set)
 
-    async def strava_for(self, athlete_id: int) -> StravaClient:
-        """A Strava client acting for an athlete, with their (refreshed if needed) access token."""
-        return self.strava.with_token(await self.store.fetch_token(athlete_id))
+    async def intervals_for(self, athlete_id: str) -> IntervalsClient:
+        """An intervals.icu client acting for an athlete, with their API key.
+
+        Raises:
+            NotFoundError: The athlete isn't connected.
+        """
+        return self.intervals.with_api_key(await self.store.fetch_api_key(athlete_id))
 
     def spawn(self, coroutine: Coroutine[Any, Any, None], name: str) -> asyncio.Task[None]:
         """Run a coroutine in the background, logging it if it fails."""

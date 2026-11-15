@@ -1,59 +1,33 @@
-"""API tokens: issuing them through Strava OAuth, verifying and revoking them, and reading the Strava token.
+"""API tokens: issuing them for an intervals.icu API key, and verifying and revoking them.
 
-`/token/new` starts an OAuth flow protected by a single-use `state`; its callback stores the athlete's Strava
-tokens and answers with a skintrackr bearer token (a JWT, valid for 30 days) for the `/api` routes.
+`POST /token/new` checks the athlete's intervals.icu API key, stores it, and answers with a skintrackr bearer
+token (a JWT, valid for 30 days) for the `/api` routes.
 """
 
-from typing import Annotated, Any
+from typing import Any
 
-from litestar import Request, get, post
+from litestar import Request, post
 from litestar.datastructures import State
-from litestar.exceptions import ClientException, NotAuthorizedException, PermissionDeniedException
-from litestar.params import FromQuery, QueryParameter
-from litestar.response import Redirect
+from litestar.exceptions import ClientException, NotAuthorizedException
+from litestar.params import JSONBody
 
 from skintrackr.crypto import InvalidTokenError, verify_jwt
 from skintrackr.logging import get_logger
-from skintrackr.models import converter
 from skintrackr.server.auth import authenticate_request_401, issue_token, request_token
+from skintrackr.server.connect import connect_athlete
 from skintrackr.server.errors import fail_with
-from skintrackr.server.oauth2 import exchange_and_save
 from skintrackr.server.services import get_services
 
 logger = get_logger(__name__)
 
-CALLBACK_PATH = "token/callback"
 
-
-@get("/token/new")
-async def token_start(state: State) -> Redirect:
-    """Start the OAuth flow that issues an API token."""
+@post("/token/new", status_code=200)
+async def token_new(state: State, data: JSONBody[dict[str, Any]]) -> dict[str, Any]:
+    """Connect an intervals.icu account by its API key and issue an API token."""
     services = get_services(state)
-    with fail_with("Failed to initiate OAuth flow"):
-        oauth_state = await services.store.save_oauth_state()
-    return Redirect(services.strava.authorization_url(services.config.url(CALLBACK_PATH), state=oauth_state))
-
-
-@get("/token/callback")
-async def token_callback(
-    state: State, code: FromQuery[str | None] = None, oauth_state: Annotated[str | None, QueryParameter(name="state")] = None
-) -> dict[str, Any]:
-    """Finish the OAuth flow: store the Strava tokens and issue an API token."""
-    # the `state` query parameter is `oauth_state` here: Litestar reserves `state` for the app state
-    services = get_services(state)
-    if not code:
-        raise ClientException("No code in callback")
-    if not oauth_state:
-        raise ClientException("No state in callback")
-    with fail_with("Failed to verify state token"):
-        valid_state = await services.store.consume_oauth_state(oauth_state)
-    if not valid_state:
-        logger.error("invalid OAuth state")
-        raise PermissionDeniedException("Invalid or expired state token")
-
-    token = await exchange_and_save(services, code, "token API")
-    jwt = await issue_token(services, token.athlete.id)
-    return {"access_token": jwt, "token_type": "Bearer", "athlete_id": token.athlete.id}
+    athlete = await connect_athlete(services, data, "token API")
+    jwt = await issue_token(services, athlete.id)
+    return {"access_token": jwt, "token_type": "Bearer", "athlete_id": athlete.id}
 
 
 @post("/token/verify", status_code=200)
@@ -88,14 +62,5 @@ async def token_revoke(request: Request, state: State) -> dict[str, Any]:
     return {"revoked": True, "jti": claims.jti, "athlete_id": claims.athlete_id}
 
 
-@get("/api/strava-token")
-async def strava_token(request: Request, state: State) -> dict[str, Any]:
-    """The athlete's Strava access token (refreshed first if it had expired)."""
-    services = get_services(state)
-    info = await authenticate_request_401(request, services)
-    with fail_with("failed to fetch Strava token", athlete_id=info.athlete_id):
-        token = await services.store.fetch_token_info(info.athlete_id)
-    return converter.unstructure(token)
 
-
-token_api_handlers = [token_start, token_callback, token_verify, token_revoke, strava_token]
+token_api_handlers = [token_new, token_verify, token_revoke]

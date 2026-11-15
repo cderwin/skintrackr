@@ -1,8 +1,7 @@
-"""Data exchanged with Strava and clients, and the converter that (de)serializes it.
+"""Data exchanged with intervals.icu and clients, and the converter that (de)serializes it.
 
-Attribute names are the JSON keys, so `converter.unstructure` produces the same documents the Go server
-wrote (e.g. the archived activity metadata). Decoding is lenient, like Go's: unknown keys are ignored and
-missing or null values take the field's default.
+Attribute names are the JSON keys. Decoding is lenient: unknown keys are ignored, and missing or null values
+take the field's default.
 """
 
 import json
@@ -12,19 +11,6 @@ from attrs import define, field
 from cattrs.preconf.json import make_converter
 
 converter = make_converter()
-
-LatLng = tuple[float, float]
-
-
-def _structure_latlng(value: Any, _: type) -> LatLng:
-    # Strava sends [] for activities without GPS; Go decodes that into [0, 0]
-    if not value:
-        return (0.0, 0.0)
-    latitude, longitude = value
-    return (float(latitude), float(longitude))
-
-
-converter.register_structure_hook_func(lambda cls: cls == LatLng, _structure_latlng)
 
 
 def _drop_nulls(value: Any) -> Any:
@@ -42,51 +28,49 @@ def loads[T](data: bytes | str, cls: type[T]) -> T:
 
 
 @define
-class AthleteRef:
-    """The athlete an activity belongs to."""
+class Athlete:
+    """An intervals.icu athlete (the parts skintrackr uses)."""
 
-    id: int = 0
+    id: str = ""
+    name: str = ""
 
 
 @define
-class StravaActivity:
-    """The parts of a Strava activity skintrackr keeps (the fields of Go's `StravaActivity`)."""
+class Activity:
+    """The parts of an intervals.icu activity skintrackr uses (the archive keeps all of it)."""
 
-    id: int = 0
-    athlete: AthleteRef = field(factory=AthleteRef)
+    id: str = ""
+    icu_athlete_id: str = ""
     name: str = ""
+    type: str = ""
+    start_date: str = ""
+    start_date_local: str = ""
     distance: float = 0.0
     moving_time: int = 0
     elapsed_time: int = 0
     total_elevation_gain: float = 0.0
-    type: str = ""
-    start_date: str = ""
-    start_latlng: LatLng = (0.0, 0.0)
-    end_latlng: LatLng = (0.0, 0.0)
     description: str = ""
     calories: float = 0.0
-    suffer_score: float = 0.0
-
-
-@define
-class ActivityMap:
-    """An activity's route: Strava's simplified track, as a Google encoded polyline."""
-
-    summary_polyline: str = ""
+    source: str = ""
 
 
 @define
 class ActivitySummary:
-    """One row of an athlete's activity index: decoded from Strava's activity list or an activity's details."""
+    """One row of an athlete's activity index: decoded from the activity list or an activity's details.
 
-    id: int = 0
+    Every field comes from the list's `fields=` selection (`SUMMARY_FIELDS`), so a listed summary equals the
+    indexed one until the activity changes on intervals.icu.
+    """
+
+    id: str = ""
     name: str = ""
-    sport_type: str = ""
+    type: str = ""
     start_date_local: str = ""
     total_elevation_gain: float = 0.0
     distance: float = 0.0
     moving_time: int = 0
-    map: ActivityMap = field(factory=ActivityMap)
+    icu_sync_date: str = ""
+    source: str = ""
 
 
 @define
@@ -98,6 +82,7 @@ class ImportStatus:
         activities: Activities in the index after the summary step.
         tracks_done: Activities archived in full (details and streams) so far.
         tracks_total: Activities to archive in full.
+        skipped: Activities intervals.icu lists but doesn't serve through its API (synced from Strava).
         error: Why it failed, if it did.
         updated_at: Unix time of the last change.
     """
@@ -106,17 +91,18 @@ class ImportStatus:
     activities: int = 0
     tracks_done: int = 0
     tracks_total: int = 0
+    skipped: int = 0
     error: str = ""
     updated_at: int = 0
 
 
 @define
-class RawStream:
-    """One stream from Strava's activity streams endpoint (`data` holds one value per sample)."""
+class Stream:
+    """One stream from an activity's streams endpoint: one value per sample (`latlng` puts longitudes in `data2`)."""
 
     type: str
     data: list[Any] = field(factory=list)
-    original_size: int = 0
+    data2: list[Any] = field(factory=list)
 
 
 @define
@@ -130,56 +116,3 @@ class StreamPoint:
     distance: float = 0.0
     heart_rate: float = 0.0
     temperature: float = 0.0
-
-
-@define
-class TokenInfo:
-    """A Strava access token, its refresh token and its expiry (Unix seconds)."""
-
-    access_token: str
-    refresh_token: str
-    expires_at: int
-
-
-@define
-class TokenAthlete:
-    """The athlete a Strava token exchange is for."""
-
-    id: int = 0
-    username: str = ""
-
-
-@define
-class TokenResponse:
-    """Strava's response to an authorization-code or refresh-token exchange."""
-
-    access_token: str
-    refresh_token: str
-    expires_at: int
-    token_type: str = ""
-    expires_in: int = 0
-    athlete: TokenAthlete = field(factory=TokenAthlete)
-
-    def token_info(self) -> TokenInfo:
-        """The parts of the response that are stored."""
-        return TokenInfo(access_token=self.access_token, refresh_token=self.refresh_token, expires_at=self.expires_at)
-
-
-@define
-class PushEvent:
-    """A Strava webhook event (https://developers.strava.com/docs/webhooks/)."""
-
-    object_type: str = ""
-    object_id: int = 0
-    aspect_type: str = ""
-    updates: dict[str, Any] = field(factory=dict)
-    owner_id: int = 0
-    subscription_id: int = 0
-    event_time: int = 0
-
-
-@define
-class Subscription:
-    """A Strava webhook subscription."""
-
-    id: int

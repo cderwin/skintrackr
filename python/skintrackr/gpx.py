@@ -1,4 +1,4 @@
-"""Build GPX 1.1 documents from Strava activity streams.
+"""Build GPX 1.1 documents from activity streams.
 
 The output matches the Go server's (gpxgo) layout: one track with one segment, a `<time>` in the metadata,
 and optional Garmin TrackPointExtension `hr`/`atemp` values on each point.

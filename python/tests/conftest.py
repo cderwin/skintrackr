@@ -1,11 +1,12 @@
-"""Shared fixtures and test doubles: a fake Strava API, fake Redis, in-memory S3 (moto) and an app test client."""
+"""Shared fixtures and test doubles: a fake intervals.icu API, fake Redis, in-memory S3 (moto) and an app test client."""
 
 import asyncio
+import base64
 import gzip
 import json
 import time
 from collections.abc import Awaitable, Callable, Iterator
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -18,97 +19,124 @@ from litestar.testing import TestClient
 from moto import mock_aws
 
 from skintrackr.clients.blob_store import BlobStore
+from skintrackr.clients.intervals import IntervalsClient, RateLimiter
 from skintrackr.clients.store import Store
-from skintrackr.clients.strava import StravaClient
 from skintrackr.config import BlobStorageConfig, Config
 from skintrackr.crypto import generate_jwt
-from skintrackr.models import TokenInfo
 from skintrackr.server.app import create_app
 from skintrackr.server.auth import SESSION_COOKIE
 from skintrackr.server.services import Services
 
 SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-ATHLETE_ID = 4242
-ACTIVITY_ID = 1001
+ATHLETE_ID = "i4242"
+ACTIVITY_ID = "i1001"
+API_KEY = "athlete-api-key"
 START_DATE = "2024-01-15T08:30:00Z"
 
 ACTIVITY = {
     "id": ACTIVITY_ID,
-    "athlete": {"id": ATHLETE_ID, "resource_state": 1},
+    "icu_athlete_id": ATHLETE_ID,
     "name": "Morning Skin",
+    "type": "BackcountrySki",
+    "start_date": START_DATE,
+    "start_date_local": "2024-01-15T00:30:00",
     "distance": 6.5,
     "moving_time": 5,
     "elapsed_time": 5,
     "total_elevation_gain": 0.8,
-    "type": "BackcountrySki",
-    "start_date": START_DATE,
-    "start_latlng": [47.6062, -122.3321],
-    "end_latlng": [47.60625, -122.33215],
     "description": None,
-    "suffer_score": 3.0,
+    "source": "SUUNTO",
+    "icu_sync_date": "2024-01-15T09:00:00.000+00:00",
+    "icu_training_load": 12,
 }
 
 STREAMS = [
-    {"type": "latlng", "data": [[47.6062, -122.3321], [47.60625, -122.33215]], "original_size": 2},
-    {"type": "altitude", "data": [56.2, 57.0], "original_size": 2},
-    {"type": "time", "data": [0, 5], "original_size": 2},
-    {"type": "distance", "data": [0, 6.5], "original_size": 2},
+    {"type": "time", "name": None, "data": [0, 5], "valueType": "java.lang.Integer"},
+    {"type": "latlng", "name": None, "data": [47.6062, 47.60625], "data2": [-122.3321, -122.33215]},
+    {"type": "altitude", "name": None, "data": [56.2, 57.0]},
+    {"type": "distance", "name": None, "data": [0.0, 6.5]},
 ]
 
+API = "/api/v1"
 Route = Callable[[httpx.Request], httpx.Response]
 
 
-def _unix(iso: str) -> int:
-    return int(datetime.fromisoformat(iso).timestamp())
+def summary(activity_id: str, day: str, vert: float = 1.0, type: str = "BackcountrySki", **fields: Any) -> dict[str, Any]:
+    """An activity as intervals.icu lists it, starting at 9am local time on `day` (YYYY-MM-DD)."""
+    return {
+        **{key: ACTIVITY[key] for key in ("name", "distance", "moving_time", "source", "icu_sync_date")},
+        "id": activity_id,
+        "type": type,
+        "start_date_local": f"{day}T09:00:00",
+        "total_elevation_gain": vert,
+        **fields,
+    }
 
 
-def summary(activity_id: int, day: str, vert: float, sport_type: str = "BackcountrySki") -> dict[str, Any]:
-    """An activity as Strava lists it, starting at 9am local time on `day` (YYYY-MM-DD)."""
-    return {"id": activity_id, "sport_type": sport_type, "start_date_local": f"{day}T09:00:00Z", "total_elevation_gain": vert}
+def basic_auth_key(request: httpx.Request) -> str | None:
+    """The API key a request sends (HTTP Basic, username `API_KEY`)."""
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Basic "):
+        return None
+    username, _, password = base64.b64decode(header.removeprefix("Basic ")).decode().partition(":")
+    return password if username == "API_KEY" else None
 
 
-class FakeStrava:
-    """A fake Strava API: canned responses by method and path, and a record of every request."""
+class FakeIntervals:
+    """A fake intervals.icu API: canned responses by method and path, and a record of every request.
+
+    Requests with an API key other than `keys` get 401, like intervals.icu.
+    """
 
     def __init__(self) -> None:
         self.routes: dict[tuple[str, str], Route] = {}
         self.requests: list[httpx.Request] = []
+        self.keys = {API_KEY}
 
     def add(self, method: str, path: str, body: Any = None, status: int = 200) -> None:
-        """Answer `method path` with `body` as JSON."""
-        self.routes[(method, path)] = lambda _: httpx.Response(status, json=body)
+        """Answer `method path` (under /api/v1) with `body` as JSON."""
+        self.routes[(method, f"{API}{path}")] = lambda _: httpx.Response(status, json=body)
+
+    def add_athlete(self, athlete_id: str = ATHLETE_ID, name: str = "Skinner") -> None:
+        """Serve the API key's own athlete."""
+        self.add("GET", "/athlete/0", {"id": athlete_id, "name": name, "icu_api_key": "not-ours"})
 
     def add_activity(self, activity: dict[str, Any] = ACTIVITY, streams: list[dict[str, Any]] = STREAMS) -> None:
         """Serve an activity and its streams."""
-        self.add("GET", f"/api/v3/activities/{activity['id']}", activity)
-        self.add("GET", f"/api/v3/activities/{activity['id']}/streams", streams)
+        self.add("GET", f"/activity/{activity['id']}", activity)
+        self.add("GET", f"/activity/{activity['id']}/streams.json", streams)
 
-    def add_activities(self, activities: list[dict[str, Any]]) -> None:
-        """Serve the athlete's activity list, filtered by `after` and paged like Strava (by `start_date_local`)."""
+    def add_activities(self, activities: list[dict[str, Any]], athlete_id: str = ATHLETE_ID) -> None:
+        """Serve the athlete's activity list, filtered by `oldest` (a local date), newest first."""
 
         def route(request: httpx.Request) -> httpx.Response:
-            after = int(request.url.params.get("after", 0))
-            matching = [a for a in activities if _unix(a["start_date_local"]) > after]
-            per_page, page = int(request.url.params["per_page"]), int(request.url.params["page"])
-            return httpx.Response(200, json=matching[(page - 1) * per_page : page * per_page])
+            oldest = request.url.params["oldest"]
+            matching = [a for a in activities if a["start_date_local"][:10] >= oldest]
+            return httpx.Response(200, json=sorted(matching, key=lambda a: a["start_date_local"], reverse=True))
 
-        self.routes[("GET", "/api/v3/athlete/activities")] = route
+        self.routes[("GET", f"{API}/athlete/{athlete_id}/activities")] = route
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        if basic_auth_key(request) not in self.keys:
+            return httpx.Response(401, json={"status": 401, "error": "Unauthorized"})
         route = self.routes.get((request.method, request.url.path))
-        return route(request) if route else httpx.Response(404, json={"message": "Record Not Found"})
+        return route(request) if route else httpx.Response(404, json={"status": 404, "error": "Not found"})
 
     def http(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
 
-    def client(self, token: str = "") -> StravaClient:
-        """A StravaClient sending requests to this fake."""
-        return StravaClient(http=self.http(), token=token, client_id="client-id", client_secret="client-secret")
+    def client(self, api_key: str = API_KEY) -> IntervalsClient:
+        """An IntervalsClient sending requests to this fake."""
+        return IntervalsClient(http=self.http(), api_key=api_key, limiter=RateLimiter(spacing=0))
 
     def last(self, method: str, path: str) -> httpx.Request:
-        """The last request to `method path`."""
-        return next(r for r in reversed(self.requests) if r.method == method and r.url.path == path)
+        """The last request to `method path` (under /api/v1)."""
+        return next(r for r in reversed(self.requests) if r.method == method and r.url.path == f"{API}{path}")
+
+    def paths(self) -> list[str]:
+        """Every requested path, under /api/v1."""
+        return [r.url.path.removeprefix(API) for r in self.requests]
 
 
 class FakeBucket:
@@ -136,6 +164,10 @@ class FakeBucket:
     def put(self, key: str, body: bytes = b"{}") -> None:
         self.s3.put_object(Bucket=self.NAME, Key=key, Body=body)
 
+    def put_json(self, key: str, value: Any) -> None:
+        """Write `value` as gzipped JSON, as the archive does."""
+        self.put(key, gzip.compress(json.dumps(value).encode()))
+
     def fail_writes(self) -> None:
         """Make every later PutObject fail."""
 
@@ -149,18 +181,15 @@ class FakeBucket:
 def config() -> Config:
     return Config(
         blob_storage=BlobStorageConfig(access_key_id="test", secret_access_key="test"),
-        strava_client_id="client-id",
-        strava_client_secret="client-secret",
         redis_url="redis://unused",
         secret=SECRET,
-        base_url="https://skintrackr.test",
-        verify_token="verify-me",
+        background_spacing=0,
     )
 
 
 @pytest.fixture
-def strava() -> FakeStrava:
-    return FakeStrava()
+def intervals() -> FakeIntervals:
+    return FakeIntervals()
 
 
 @pytest.fixture
@@ -180,8 +209,8 @@ def fake_redis(server: FakeServer) -> FakeAsyncRedis:
 
 
 @pytest.fixture
-def store(redis_server: FakeServer, strava: FakeStrava) -> Store:
-    return Store(redis=fake_redis(redis_server), secret=SECRET, strava=strava.client())
+def store(redis_server: FakeServer) -> Store:
+    return Store(redis=fake_redis(redis_server), secret=SECRET)
 
 
 def with_store[T](server: FakeServer, action: Callable[[Store], Awaitable[T]]) -> T:
@@ -193,21 +222,29 @@ def with_store[T](server: FakeServer, action: Callable[[Store], Awaitable[T]]) -
     async def run() -> T:
         redis = fake_redis(server)
         try:
-            return await action(Store(redis=redis, secret=SECRET, strava=FakeStrava().client()))
+            return await action(Store(redis=redis, secret=SECRET))
         finally:
             await redis.aclose()
 
     return asyncio.run(run())
 
 
-def save_strava_token(server: FakeServer, athlete_id: int = ATHLETE_ID, expires_in: int = 3600) -> TokenInfo:
-    """Store a Strava token for an athlete."""
-    token = TokenInfo(access_token="strava-access", refresh_token="strava-refresh", expires_at=int(time.time()) + expires_in)
-    with_store(server, lambda s: s.save_token(athlete_id, token))
-    return token
+def make_services(config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer) -> Services:
+    """Services wired to the fakes, outside an app."""
+    return Services(
+        config=config,
+        store=Store(redis=fake_redis(redis_server), secret=config.secret),
+        intervals=intervals.client(api_key=""),
+        blob_store=bucket.store,
+    )
 
 
-def issue_api_token(server: FakeServer, athlete_id: int = ATHLETE_ID) -> str:
+def connect(server: FakeServer, athlete_id: str = ATHLETE_ID, api_key: str = API_KEY) -> None:
+    """Store an athlete's API key, as connecting does."""
+    with_store(server, lambda s: s.save_api_key(athlete_id, api_key))
+
+
+def issue_api_token(server: FakeServer, athlete_id: str = ATHLETE_ID) -> str:
     """Issue (and record) an API token for an athlete; returns the JWT."""
     jwt, claims = generate_jwt(athlete_id, SECRET, timedelta(days=1))
     with_store(server, lambda s: s.save_jwt(claims))
@@ -241,13 +278,13 @@ def frontend_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def client(
-    config: Config, redis_server: FakeServer, strava: FakeStrava, bucket: FakeBucket, frontend_dir: Path
+    config: Config, redis_server: FakeServer, intervals: FakeIntervals, bucket: FakeBucket, frontend_dir: Path
 ) -> Iterator[TestClient]:
-    """A test client for an app wired to the fakes (no webhook subscription at startup)."""
+    """A test client for an app wired to the fakes (no sync loop or resumed imports at startup)."""
     app = create_app(
         config,
         redis=fake_redis(redis_server),
-        http=strava.http(),
+        http=intervals.http(),
         blob_store=bucket.store,
         frontend_dir=frontend_dir,
         startup_tasks=False,
@@ -260,11 +297,15 @@ def services_of(client: TestClient) -> Services:
     return client.app.state.services
 
 
-def wait_for_background(client: TestClient, timeout: float = 5.0) -> None:
-    """Wait until the app's background tasks have finished."""
+def wait_until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
+    """Wait until `condition()` holds."""
     deadline = time.monotonic() + timeout
-    while services_of(client).background:
+    while not condition():
         if time.monotonic() > deadline:
-            raise TimeoutError("background tasks still running")
+            raise TimeoutError("condition not met")
         time.sleep(0.01)
 
+
+def wait_for_background(client: TestClient, timeout: float = 5.0) -> None:
+    """Wait until the app's background tasks have finished."""
+    wait_until(lambda: not services_of(client).background, timeout)

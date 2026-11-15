@@ -17,20 +17,19 @@ from tests.conftest import SECRET
 
 OTHER_SECRET = "f" * 64
 
-# Made by the Go server (app.Encrypt / app.GenerateJWT) with SECRET, to check the two interoperate.
-GO_CIPHERTEXT = "YOMgslYTlfnKzcRSzbrJelz4nSvWeqqBFqxwyP6VtC8dMEjZNkJRhUaQo3cR0Ii2n8cwVLkNqATMfmw="
-GO_JWT = (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdGhsZXRlX2lkIjo0MjQyLCJleHBpcmVzX2F0Ijo0OTQ4MjI4MDA1LCJqdGkiOiIzN2Y3Y2Q2"
-    "ZmM3NDYwOWE1MGU1OWNkODdiMGRmODg5Yjg5YWQ2Y2FiNWE5NGM5NjcxNDIyZTc2OTJkZTczNjY5IiwiZXhwIjo0OTQ4MjI4MDA1LCJuYmYiOjE3"
-    "OTQ2MjgwMDUsImlhdCI6MTc5NDYyODAwNX0.2EJlkEz9xwQAmoZCxQLoBaj9bbNrn6lEMpfICX2OSp8"
+# Fixed outputs (made with SECRET) of the formats that are stored or handed out: they must keep working.
+STORED_CIPHERTEXT = "xf3tNgVZs3cAJL8H9eGxn++KP7OdBxygteiJmWkgzMH1SFC3BVzPdec6vw3Fjq4n9ts4iDMcr/mS"
+ISSUED_JWT = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdGhsZXRlX2lkIjoiaTQyNDIiLCJleHBpcmVzX2F0Ijo0OTQ4MjI4MDA1LCJqdGkiOiJkN2M3"
+    "OTVlNzhiOGJkMjgwMjU4ZmE3NTkzYTA5Zjg3Yzc0ZmUwNDQ3OGU5YTE1YjlmNzU4ZmIyMWQ0MDcwYjYyIiwiZXhwIjo0OTQ4MjI4MDA1LCJpYXQi"
+    "OjE3OTQ2MjgwMDUsIm5iZiI6MTc5NDYyODAwNX0.8LTaK0EtrK8UYQmH5uYbF6eqrJaJ-3ZGbcGde-55Igs"
 )
-GO_JTI = "37f7cd6fc74609a50e59cd87b0df889b89ad6cab5a94c9671422e7692de73669"
-
+ISSUED_JTI = "d7c795e78b8bd280258fa7593a09f87c74fe04478e9a15b9f758fb21d4070b62"
 
 # --- encryption
 
 
-@pytest.mark.parametrize("plaintext", ["", "strava-token", "unicode ✓ ünïcödé", "x" * 10_000])
+@pytest.mark.parametrize("plaintext", ["", "intervals-api-key", "unicode ✓ ünïcödé", "x" * 10_000])
 def test_encrypt_round_trip(plaintext: str) -> None:
     assert decrypt(encrypt(plaintext, SECRET), SECRET) == plaintext
 
@@ -39,8 +38,8 @@ def test_encrypt_uses_a_fresh_nonce() -> None:
     assert encrypt("same", SECRET) != encrypt("same", SECRET)
 
 
-def test_decrypts_go_ciphertext() -> None:
-    assert decrypt(GO_CIPHERTEXT, SECRET) == "strava-access-token"
+def test_decrypts_stored_ciphertext() -> None:
+    assert decrypt(STORED_CIPHERTEXT, SECRET) == "intervals-api-key"
 
 
 def test_decrypt_with_wrong_secret_fails() -> None:
@@ -74,15 +73,14 @@ def test_secret_key_rejects_invalid_secrets(secret: str, message: str) -> None:
 
 
 def test_generate_jwt_claims() -> None:
-    token, claims = generate_jwt(ATHLETE := 7, SECRET, timedelta(hours=1), now=1_700_000_000)
+    token, claims = generate_jwt(ATHLETE := "i7", SECRET, timedelta(hours=1), now=1_700_000_000)
     assert claims.athlete_id == ATHLETE
     assert claims.issued_at == 1_700_000_000
     assert claims.expires_at == 1_700_003_600
     assert len(claims.jti) == 64
     payload = jwt.decode(token, options={"verify_signature": False})
-    # the same claims the Go server signs
     assert payload == {
-        "athlete_id": 7,
+        "athlete_id": "i7",
         "expires_at": 1_700_003_600,
         "jti": claims.jti,
         "exp": 1_700_003_600,
@@ -93,45 +91,47 @@ def test_generate_jwt_claims() -> None:
 
 
 def test_jwt_round_trip() -> None:
-    token, claims = generate_jwt(7, SECRET, timedelta(hours=1))
+    token, claims = generate_jwt("i7", SECRET, timedelta(hours=1))
     assert verify_jwt(token, SECRET) == claims
 
 
 def test_jtis_are_unique() -> None:
-    assert generate_jwt(7, SECRET, timedelta(hours=1))[1].jti != generate_jwt(7, SECRET, timedelta(hours=1))[1].jti
+    assert generate_jwt("i7", SECRET, timedelta(hours=1))[1].jti != generate_jwt("i7", SECRET, timedelta(hours=1))[1].jti
 
 
-def test_verifies_go_jwt() -> None:
-    claims = verify_jwt(GO_JWT, SECRET)
-    assert (claims.athlete_id, claims.jti) == (4242, GO_JTI)
+def test_verifies_issued_jwt() -> None:
+    claims = verify_jwt(ISSUED_JWT, SECRET)
+    assert (claims.athlete_id, claims.jti) == ("i4242", ISSUED_JTI)
 
 
 def test_verify_rejects_wrong_secret() -> None:
-    token, _ = generate_jwt(7, SECRET, timedelta(hours=1))
+    token, _ = generate_jwt("i7", SECRET, timedelta(hours=1))
     with pytest.raises(InvalidTokenError):
         verify_jwt(token, OTHER_SECRET)
 
 
 def test_verify_rejects_expired_token() -> None:
-    token, _ = generate_jwt(7, SECRET, timedelta(hours=1), now=time.time() - 7200)
+    token, _ = generate_jwt("i7", SECRET, timedelta(hours=1), now=time.time() - 7200)
     with pytest.raises(InvalidTokenError, match="expired"):
         verify_jwt(token, SECRET)
 
 
-@pytest.mark.parametrize("token", ["", "not-a-jwt", "a.b.c", GO_JWT[:-4]])
+@pytest.mark.parametrize("token", ["", "not-a-jwt", "a.b.c", ISSUED_JWT[:-4]])
 def test_verify_rejects_malformed_tokens(token: str) -> None:
     with pytest.raises(InvalidTokenError):
         verify_jwt(token, SECRET)
 
 
 def test_verify_rejects_unsupported_algorithm() -> None:
-    token = jwt.encode({"athlete_id": 7, "expires_at": 1, "jti": "x"}, "", algorithm="none")
+    token = jwt.encode({"athlete_id": "i7", "expires_at": 1, "jti": "x"}, "", algorithm="none")
     with pytest.raises(InvalidTokenError):
         verify_jwt(token, SECRET)
 
 
-def test_verify_requires_claims() -> None:
+@pytest.mark.parametrize("athlete_id", [None, "", 4242])
+def test_verify_requires_claims(athlete_id: object) -> None:
     now = int(time.time())
-    token = jwt.encode({"exp": now + 60, "iat": now}, SECRET, algorithm="HS256")
+    claims = {"exp": now + 60, "iat": now, "expires_at": now + 60, "jti": "x", "athlete_id": athlete_id}
+    token = jwt.encode({k: v for k, v in claims.items() if v is not None}, SECRET, algorithm="HS256")
     with pytest.raises(InvalidTokenError, match="missing required claims"):
         verify_jwt(token, SECRET)

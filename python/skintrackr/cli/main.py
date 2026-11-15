@@ -2,19 +2,17 @@
 
 import click
 
-from skintrackr.cli.migrate import migrate_legacy
+from skintrackr.cli.migrate import migrate
 from skintrackr.cli.server import serve
-from skintrackr.cli.strava_debug import strava_debug
 
 
 @click.group()
 def main() -> None:
-    """skintrackr: Strava webhook server and tools."""
+    """skintrackr: intervals.icu activity archive and stats."""
 
 
 main.add_command(serve)
-main.add_command(strava_debug)
-main.add_command(migrate_legacy)
+main.add_command(migrate)
 
 
 if __name__ == "__main__":

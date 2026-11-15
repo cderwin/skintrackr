@@ -1,26 +1,23 @@
 """App-wide behaviour: health, serving the frontend, error shape, startup."""
 
-import asyncio
-
 import pytest
+from fakeredis import FakeServer
 from litestar.testing import TestClient
 
-from skintrackr.clients.store import Store
-from skintrackr.clients.strava import StravaClient
 from skintrackr.config import Config
 from skintrackr.models import ImportStatus
 from skintrackr.server.app import create_app
-from skintrackr.server.services import Services
-from skintrackr.server.webhooks import establish_subscriptions
+from skintrackr.server.ingest import SYNC_TASK
 from tests.conftest import (
     ASSET_PATH,
     ATHLETE_ID,
     INDEX_HTML,
     FakeBucket,
-    FakeStrava,
+    FakeIntervals,
+    connect,
     fake_redis,
-    save_strava_token,
-    wait_for_background,
+    services_of,
+    wait_until,
     with_store,
 )
 
@@ -59,58 +56,24 @@ def test_missing_asset_is_404_not_the_index(client: TestClient) -> None:
     assert client.get("/assets/gone-123.js").status_code == 404
 
 
-def test_unmatched_method_uses_echo_error_shape(client: TestClient) -> None:
+def test_unmatched_method_uses_the_error_shape(client: TestClient) -> None:
     # every GET path falls back to the SPA index, so an unknown POST hits the catch-all's 405
     response = client.post("/nope")
     assert response.status_code == 405
     assert response.json() == {"message": "Method Not Allowed"}
 
 
-def services(config: Config, strava: FakeStrava, bucket: FakeBucket, redis_server) -> Services:
-    client: StravaClient = strava.client()
-    return Services(
-        config=config,
-        store=Store(redis=fake_redis(redis_server), secret=config.secret, strava=client),
-        strava=client,
-        blob_store=bucket.store,
-    )
-
-
-def test_establish_subscriptions_keeps_existing(config, strava: FakeStrava, bucket, redis_server) -> None:
-    strava.add("GET", "/api/v3/push_subscriptions", [{"id": 5}])
-    asyncio.run(establish_subscriptions(services(config, strava, bucket, redis_server)))
-    assert [r.method for r in strava.requests] == ["GET"]
-
-
-def test_establish_subscriptions_creates_one(config, strava: FakeStrava, bucket, redis_server) -> None:
-    strava.add("GET", "/api/v3/push_subscriptions", [])
-    strava.add("POST", "/api/v3/push_subscriptions", {"id": 6})
-    asyncio.run(establish_subscriptions(services(config, strava, bucket, redis_server)))
-    body = strava.last("POST", "/api/v3/push_subscriptions").content.decode()
-    assert "callback_url=https%3A%2F%2Fskintrackr.test%2Fsubscriptions%2Fcallback" in body
-    assert "verify_token=verify-me" in body
-
-
-def test_establish_subscriptions_logs_errors(config, strava: FakeStrava, bucket, redis_server) -> None:
-    # nothing is served, so listing fails; the error is logged rather than raised
-    asyncio.run(establish_subscriptions(services(config, strava, bucket, redis_server)))
-    assert len(strava.requests) == 1
-
-
-def test_subscribes_at_startup(config, strava: FakeStrava, bucket, redis_server) -> None:
-    strava.add("GET", "/api/v3/push_subscriptions", [{"id": 5}])
-    app = create_app(config, redis=fake_redis(redis_server), http=strava.http(), blob_store=bucket.store)
-    with TestClient(app) as client:
-        wait_for_background(client)
-    assert strava.last("GET", "/api/v3/push_subscriptions")
-
-
-def test_resumes_running_imports_at_startup(config, strava: FakeStrava, bucket, redis_server) -> None:
-    save_strava_token(redis_server)
+def test_syncs_and_resumes_running_imports_at_startup(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    connect(redis_server)
     with_store(redis_server, lambda s: s.save_import(ATHLETE_ID, ImportStatus(state="running")))
-    strava.add_activities([])
-    app = create_app(config, redis=fake_redis(redis_server), http=strava.http(), blob_store=bucket.store)
+    intervals.add_activities([])
+    app = create_app(config, redis=fake_redis(redis_server), http=intervals.http(), blob_store=bucket.store)
     with TestClient(app) as client:
-        wait_for_background(client)
-    assert with_store(redis_server, lambda s: s.load_import(ATHLETE_ID)).state == "done"
-
+        wait_until(lambda: with_store(redis_server, lambda s: s.load_import(ATHLETE_ID)).state == "done")
+        # the sync loop keeps running until shutdown
+        assert services_of(client).is_running(SYNC_TASK)
+    oldest = [r.url.params["oldest"] for r in intervals.requests]
+    assert "1970-01-01" in oldest  # the import
+    assert any(day != "1970-01-01" for day in oldest)  # the sync

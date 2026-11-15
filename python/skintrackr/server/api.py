@@ -1,5 +1,6 @@
 """Authenticated activity API: GPX export, archiving, bulk imports, and vert stats."""
 
+import re
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -8,7 +9,7 @@ from litestar.datastructures import State
 from litestar.exceptions import ClientException
 from litestar.params import FromPath, FromQuery
 
-from skintrackr.clients.strava import activity_gpx, merge_streams
+from skintrackr.clients.intervals import activity_gpx, merge_streams
 from skintrackr.models import converter
 from skintrackr.server.auth import authenticate_request
 from skintrackr.server.errors import fail_with
@@ -17,17 +18,19 @@ from skintrackr.server.services import get_services
 from skintrackr.vert import year_to_date
 
 GPX_MEDIA_TYPE = "application/gpx+xml"
+# intervals.icu activity ids look like `i123456789`
+ACTIVITY_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
-def _activity_id(value: str) -> int:
-    if not value.isdigit():
+def _activity_id(value: str) -> str:
+    if not ACTIVITY_ID.fullmatch(value):
         raise ClientException("invalid activity id")
-    return int(value)
+    return value
 
 
 @get("/api/activity/{activity_id:str}/export")
 async def export_track(request: Request, state: State, activity_id: FromPath[str]) -> Response[bytes]:
-    """Download one of the athlete's activities as a GPX file: from the archive, else straight from Strava."""
+    """Download one of the athlete's activities as a GPX file: from the archive, else straight from intervals.icu."""
     services = get_services(state)
     info = await authenticate_request(request, services)
     context = {"athlete_id": info.athlete_id, "activity_id": activity_id}
@@ -39,12 +42,12 @@ async def export_track(request: Request, state: State, activity_id: FromPath[str
         with fail_with("failed to export activity", **context):
             track = activity_gpx(activity, merge_streams(streams, skip_unknown=True))
     else:
-        with fail_with("failed to fetch Strava token", **context):
-            strava = await services.strava_for(info.athlete_id)
+        with fail_with("failed to fetch intervals.icu API key", **context):
+            intervals = await services.intervals_for(info.athlete_id)
         with fail_with("failed to fetch activity", **context):
-            activity = await strava.get_activity(activity_id)
+            activity = await intervals.get_activity(activity_id)
         with fail_with("failed to export activity", **context):
-            track = await strava.export_activity_gpx(activity)
+            track = await intervals.export_activity_gpx(activity)
 
     return Response(
         track,
@@ -60,10 +63,10 @@ async def persist_activity(request: Request, state: State, activity_id: FromPath
     info = await authenticate_request(request, services)
     context = {"athlete_id": info.athlete_id, "activity_id": activity_id}
 
-    with fail_with("failed to fetch Strava token", **context):
-        strava = await services.strava_for(info.athlete_id)
+    with fail_with("failed to fetch intervals.icu API key", **context):
+        intervals = await services.intervals_for(info.athlete_id)
     with fail_with("failed to persist activity", **context):
-        await ingest_activity(services, strava, info.athlete_id, _activity_id(activity_id))
+        await ingest_activity(services, intervals, info.athlete_id, _activity_id(activity_id))
     return {"ok": True, "activityId": activity_id}
 
 

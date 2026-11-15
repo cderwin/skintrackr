@@ -13,12 +13,15 @@ from skintrackr.models import ActivitySummary
 # previous years to compare against
 PREVIOUS_YEARS = 5
 
-# Sport types that don't count: rides, and lift-served skiing. Everything else is on foot (or near enough).
-EXCLUDED_SPORT_TYPES = frozenset(
+# Activity types that don't count: rides, lift-served skiing and virtual skiing. Everything else is on foot (or
+# near enough).
+EXCLUDED_TYPES = frozenset(
     {
         "Ride",
         "MountainBikeRide",
         "GravelRide",
+        "TrackRide",
+        "Cyclocross",
         "EBikeRide",
         "EMountainBikeRide",
         "VirtualRide",
@@ -26,6 +29,7 @@ EXCLUDED_SPORT_TYPES = frozenset(
         "Handcycle",
         "AlpineSki",
         "Snowboard",
+        "VirtualSki",
     }
 )
 
@@ -62,7 +66,7 @@ def year_to_date(activities: Iterable[ActivitySummary], as_of: date) -> VertStat
         day = date.fromisoformat(activity.start_date_local[:10])
         if (
             day.year in totals
-            and activity.sport_type not in EXCLUDED_SPORT_TYPES
+            and activity.type not in EXCLUDED_TYPES
             and (day.month, day.day) <= (as_of.month, as_of.day)
         ):
             totals[day.year] += activity.total_elevation_gain

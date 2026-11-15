@@ -1,4 +1,4 @@
-"""Error responses, in Echo's `{"message": "..."}` shape which existing API clients expect."""
+"""Error responses, in the `{"message": "..."}` shape API clients expect."""
 
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -31,7 +31,7 @@ def fail_with(message: str, status_code: int = 500, /, **context: object) -> Gen
     HTTPExceptions raised in the block pass through unchanged.
 
         with fail_with("failed to fetch activity", activity_id=activity_id):
-            activity = await strava.get_activity(activity_id)
+            activity = await intervals.get_activity(activity_id)
     """
     try:
         yield

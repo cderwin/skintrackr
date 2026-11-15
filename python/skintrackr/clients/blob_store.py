@@ -2,8 +2,11 @@
 
 Layout (the bucket is the source of truth; the Redis activity index is derived from it):
 
-    athletes/{athlete}/activities/{activity}/activity.json.gz   Strava's DetailedActivity, as received
-    athletes/{athlete}/activities/{activity}/streams.json.gz    Strava's streams, every type recorded
+    athletes/{athlete}/activities/{activity}/activity.json.gz   intervals.icu's activity JSON, as received
+    athletes/{athlete}/activities/{activity}/streams.json.gz    intervals.icu's streams JSON, every type recorded
+
+The former Go server's layout (`activities/{athlete}/metadata/{id}.json` and `tracks/{id}.gpx`) is no longer
+written; the `skintrackr migrate` commands delete it.
 """
 
 import asyncio
@@ -15,10 +18,10 @@ import boto3
 from attrs import frozen
 from botocore.exceptions import ClientError
 
-from skintrackr.clients.strava import ARCHIVE_STREAM_KEYS, StravaClient
+from skintrackr.clients.intervals import IntervalsClient
 from skintrackr.config import BlobStorageConfig
 from skintrackr.logging import get_logger
-from skintrackr.models import ActivitySummary, RawStream, StravaActivity, loads
+from skintrackr.models import Activity, ActivitySummary, Stream, loads
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -32,26 +35,26 @@ class ArchiveKeys:
     """Where an activity is archived.
 
     Attributes:
-        activity: Strava's DetailedActivity JSON, gzipped.
-        streams: Strava's streams JSON (every type the activity has), gzipped.
+        activity: intervals.icu's activity JSON, gzipped.
+        streams: intervals.icu's streams JSON (every type the activity has), gzipped.
     """
 
     activity: str
     streams: str
 
 
-def athlete_prefix(athlete_id: int) -> str:
+def athlete_prefix(athlete_id: str) -> str:
     """Everything archived for an athlete."""
     return f"athletes/{athlete_id}/"
 
 
-def archive_keys(athlete_id: int, activity_id: int) -> ArchiveKeys:
+def archive_keys(athlete_id: str, activity_id: str) -> ArchiveKeys:
     """The keys an activity is archived under."""
     prefix = f"{athlete_prefix(athlete_id)}activities/{activity_id}/"
     return ArchiveKeys(activity=f"{prefix}activity.json.gz", streams=f"{prefix}streams.json.gz")
 
 
-def legacy_prefix(athlete_id: int) -> str:
+def legacy_prefix(athlete_id: str) -> str:
     """The former archive layout (from the Go server): `metadata/{id}.json` and `tracks/{id}.gpx`."""
     return f"activities/{athlete_id}/"
 
@@ -124,53 +127,53 @@ class BlobStore:
 
     # --- activities
 
-    async def archive_activity(self, strava: StravaClient, athlete_id: int, activity_id: int) -> ActivitySummary:
-        """Archive an activity: fetch its details and every stream from Strava and upload them (gzipped).
+    async def archive_activity(self, intervals: IntervalsClient, athlete_id: str, activity_id: str) -> ActivitySummary:
+        """Archive an activity: fetch it and every stream from intervals.icu and upload them (gzipped).
 
         Args:
-            strava: Client acting for the activity's owner.
+            intervals: Client acting for the activity's owner.
             athlete_id: The owner.
-            activity_id: Strava activity id.
+            activity_id: intervals.icu activity id.
 
         Returns:
             The activity's index row.
 
         Raises:
-            StravaError: Fetching the activity or its streams failed.
+            IntervalsError: Fetching the activity or its streams failed.
             botocore.exceptions.ClientError: An upload failed.
         """
-        activity = await strava.get_activity_json(str(activity_id))
-        streams = await strava.get_streams_json(str(activity_id), ARCHIVE_STREAM_KEYS)
+        activity = await intervals.get_activity_json(activity_id)
+        streams = await intervals.get_streams_json(activity_id)
         keys = archive_keys(athlete_id, activity_id)
         await self.put(keys.activity, gzip.compress(activity), "application/json", "gzip")
         await self.put(keys.streams, gzip.compress(streams), "application/json", "gzip")
         logger.info("archived activity", extra={"athlete_id": athlete_id, "activity_id": activity_id, "bucket": self.bucket})
         return loads(activity, ActivitySummary)
 
-    async def read_activity(self, athlete_id: int, activity_id: int) -> tuple[StravaActivity, list[RawStream]] | None:
+    async def read_activity(self, athlete_id: str, activity_id: str) -> tuple[Activity, list[Stream]] | None:
         """An archived activity's details and streams; None if it isn't archived."""
         keys = archive_keys(athlete_id, activity_id)
         activity, streams = await self.get(keys.activity), await self.get(keys.streams)
         if activity is None or streams is None:
             return None
-        return loads(gzip.decompress(activity), StravaActivity), loads(gzip.decompress(streams), list[RawStream])
+        return loads(gzip.decompress(activity), Activity), loads(gzip.decompress(streams), list[Stream])
 
-    async def archived_activity_ids(self, athlete_id: int) -> set[int]:
+    async def archived_activity_ids(self, athlete_id: str) -> set[str]:
         """Activities archived in full (their streams are written last)."""
-        pattern = re.compile(rf"^{re.escape(athlete_prefix(athlete_id))}activities/(\d+)/streams\.json\.gz$")
+        pattern = re.compile(rf"^{re.escape(athlete_prefix(athlete_id))}activities/([^/]+)/streams\.json\.gz$")
         keys = await self.list_keys(f"{athlete_prefix(athlete_id)}activities/")
-        return {int(match[1]) for key in keys if (match := pattern.match(key))}
+        return {match[1] for key in keys if (match := pattern.match(key))}
 
-    async def delete_activity(self, athlete_id: int, activity_id: int) -> None:
+    async def delete_activity(self, athlete_id: str, activity_id: str) -> None:
         """Delete an archived activity."""
         keys = archive_keys(athlete_id, activity_id)
         await self.delete_keys([keys.activity, keys.streams])
 
-    async def delete_athlete(self, athlete_id: int) -> int:
+    async def delete_athlete(self, athlete_id: str) -> int:
         """Delete everything archived for an athlete, in both layouts; returns how many objects were deleted."""
         return await self.delete_prefix(athlete_prefix(athlete_id)) + await self.delete_prefix(legacy_prefix(athlete_id))
 
-    async def legacy_activity_ids(self, athlete_id: int) -> set[int]:
+    async def legacy_activity_ids(self, athlete_id: str) -> set[str]:
         """Activities in the former layout (`activities/{athlete}/metadata/{id}.json`)."""
-        pattern = re.compile(rf"^{re.escape(legacy_prefix(athlete_id))}metadata/(\d+)\.json$")
-        return {int(m[1]) for key in await self.list_keys(legacy_prefix(athlete_id)) if (m := pattern.match(key))}
+        pattern = re.compile(rf"^{re.escape(legacy_prefix(athlete_id))}metadata/([^/]+)\.json$")
+        return {m[1] for key in await self.list_keys(legacy_prefix(athlete_id)) if (m := pattern.match(key))}
