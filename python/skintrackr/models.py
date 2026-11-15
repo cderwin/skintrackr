@@ -69,13 +69,45 @@ class StravaActivity:
 
 
 @define
+class ActivityMap:
+    """An activity's route: Strava's simplified track, as a Google encoded polyline."""
+
+    summary_polyline: str = ""
+
+
+@define
 class ActivitySummary:
-    """An activity as Strava lists it (`GET /athlete/activities`): the parts the vert stats use."""
+    """One row of an athlete's activity index: decoded from Strava's activity list or an activity's details."""
 
     id: int = 0
+    name: str = ""
     sport_type: str = ""
     start_date_local: str = ""
     total_elevation_gain: float = 0.0
+    distance: float = 0.0
+    moving_time: int = 0
+    map: ActivityMap = field(factory=ActivityMap)
+
+
+@define
+class ImportStatus:
+    """Progress of an athlete's bulk import.
+
+    Attributes:
+        state: `idle` (never run), `running`, `done` or `failed`.
+        activities: Activities in the index after the summary step.
+        tracks_done: Activities archived in full (details and streams) so far.
+        tracks_total: Activities to archive in full.
+        error: Why it failed, if it did.
+        updated_at: Unix time of the last change.
+    """
+
+    state: str = "idle"
+    activities: int = 0
+    tracks_done: int = 0
+    tracks_total: int = 0
+    error: str = ""
+    updated_at: int = 0
 
 
 @define

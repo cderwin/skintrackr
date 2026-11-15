@@ -1,10 +1,16 @@
 """Strava webhooks: the subscription, its verification callback, and inbound push events.
 
-Activity `create`/`update` events archive the activity (see `BlobStore.persist_activity`) in the background,
-since Strava expects a prompt acknowledgement and retries the webhook on timeout.
+Strava has one subscription per app, which delivers events for every athlete who authorized it. Events are
+handled in the background (see `ingest.py`), since Strava expects a prompt acknowledgement and retries on
+timeout:
+
+- activity `create`/`update`: archive the activity and update the athlete's index
+- activity `delete`: remove it from both
+- athlete deauthorization (`updates: {"authorized": "false"}`): delete everything stored for the athlete
 """
 
-from typing import Annotated, Any
+from collections.abc import Awaitable
+from typing import Annotated
 
 from litestar import Request, get, post
 from litestar.datastructures import State
@@ -13,6 +19,7 @@ from litestar.params import QueryParameter
 
 from skintrackr.logging import get_logger
 from skintrackr.models import PushEvent, loads
+from skintrackr.server.ingest import ingest_activity, remove_activity, remove_athlete
 from skintrackr.server.services import Services, get_services
 
 logger = get_logger(__name__)
@@ -42,35 +49,46 @@ async def push_event(request: Request, state: State) -> None:
         logger.warning("webhook received: undecodable event", extra={"err": str(e)})
         return
 
-    match event.object_type:
-        case "activity":
-            logger.info(
-                "webhook received: activity update",
-                extra={"athlete_id": event.owner_id, "activity_id": event.object_id, "aspect_type": event.aspect_type},
-            )
-            if event.aspect_type in ("create", "update"):
-                services = get_services(state)
-                services.spawn(persist_activity_event(services, event), name=f"persist-activity-{event.object_id}")
-        case "athlete":
-            logger.info("webhook received: athlete revoked access", extra={"athlete_id": event.owner_id})
+    services = get_services(state)
+    context: dict[str, object] = {"athlete_id": event.owner_id, "object_type": event.object_type, "aspect_type": event.aspect_type}
+    if event.object_type == "activity":
+        context["activity_id"] = event.object_id
+    logger.info("webhook received", extra=context)
+
+    match (event.object_type, event.aspect_type):
+        case ("activity", "create" | "update"):
+            work = _ingest_event(services, event)
+        case ("activity", "delete"):
+            work = remove_activity(services, event.owner_id, event.object_id)
+        case ("athlete", _) if str(event.updates.get("authorized", "")).lower() == "false":
+            work = remove_athlete(services, event.owner_id)
         case _:
-            logger.warning("webhook received: unrecognized object type", extra={"object_type": event.object_type})
+            return
+    services.spawn(_logged(work, context), name=f"webhook-{event.object_type}-{event.object_id}")
 
 
-async def persist_activity_event(services: Services, event: PushEvent) -> None:
-    """Archive the activity an event is about. Errors are logged: there's no caller to report them to."""
-    context: dict[str, Any] = {"athlete_id": event.owner_id, "activity_id": event.object_id}
+async def _ingest_event(services: Services, event: PushEvent) -> None:
+    strava = await services.strava_for(event.owner_id)
+    await ingest_activity(services, strava, event.owner_id, event.object_id)
+
+
+async def _logged(work: Awaitable[None], context: dict[str, object]) -> None:
+    """Run an event's work, logging the outcome: there's no caller to report errors to."""
     try:
-        strava = await services.strava_for(event.owner_id)
+        await work
     except Exception as e:
-        logger.error("error fetching strava token for activity persist", exc_info=e, extra=context)
+        logger.error("error handling webhook event", exc_info=e, extra=context)
         return
-    try:
-        await services.blob_store.persist_activity(strava, str(event.object_id))
-    except Exception as e:
-        logger.error("error persisting activity from webhook", exc_info=e, extra=context)
-        return
-    logger.info("persisted activity from webhook", extra=context)
+    logger.info("handled webhook event", extra=context)
+
+
+SUBSCRIBE_TASK = "establish-subscriptions"
+
+
+def ensure_subscription(services: Services) -> None:
+    """Make sure the app's webhook subscription exists, in the background (unless that's already underway)."""
+    if not services.is_running(SUBSCRIBE_TASK):
+        services.spawn(establish_subscriptions(services), name=SUBSCRIBE_TASK)
 
 
 async def establish_subscriptions(services: Services) -> None:

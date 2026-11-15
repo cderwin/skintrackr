@@ -1,41 +1,59 @@
-"""BlobStore: every S3-compatible blob-storage operation, and archiving activities there."""
+"""BlobStore: every S3-compatible blob-storage operation, and archiving activities there.
+
+Layout (the bucket is the source of truth; the Redis activity index is derived from it):
+
+    athletes/{athlete}/activities/{activity}/activity.json.gz   Strava's DetailedActivity, as received
+    athletes/{athlete}/activities/{activity}/streams.json.gz    Strava's streams, every type recorded
+"""
 
 import asyncio
+import gzip
+import re
 from typing import TYPE_CHECKING, Self
 
 import boto3
 from attrs import frozen
+from botocore.exceptions import ClientError
 
-from skintrackr.clients.strava import StravaClient
+from skintrackr.clients.strava import ARCHIVE_STREAM_KEYS, StravaClient
 from skintrackr.config import BlobStorageConfig
 from skintrackr.logging import get_logger
-from skintrackr.models import converter
+from skintrackr.models import ActivitySummary, RawStream, StravaActivity, loads
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
+    from mypy_boto3_s3.type_defs import ObjectIdentifierTypeDef, PutObjectRequestTypeDef
 
 logger = get_logger(__name__)
 
 
 @frozen
-class PersistedActivity:
-    """Where an archived activity was written.
+class ArchiveKeys:
+    """Where an activity is archived.
 
     Attributes:
-        metadata_key: Key of the activity's details (JSON).
-        track_key: Key of the activity's track (GPX).
+        activity: Strava's DetailedActivity JSON, gzipped.
+        streams: Strava's streams JSON (every type the activity has), gzipped.
     """
 
-    metadata_key: str
-    track_key: str
+    activity: str
+    streams: str
 
 
-def activity_keys(athlete_id: int, activity_id: int) -> PersistedActivity:
-    """The keys an activity is archived under (the same as the former Go server's)."""
-    return PersistedActivity(
-        metadata_key=f"activities/{athlete_id}/metadata/{activity_id}.json",
-        track_key=f"activities/{athlete_id}/tracks/{activity_id}.gpx",
-    )
+def athlete_prefix(athlete_id: int) -> str:
+    """Everything archived for an athlete."""
+    return f"athletes/{athlete_id}/"
+
+
+def archive_keys(athlete_id: int, activity_id: int) -> ArchiveKeys:
+    """The keys an activity is archived under."""
+    prefix = f"{athlete_prefix(athlete_id)}activities/{activity_id}/"
+    return ArchiveKeys(activity=f"{prefix}activity.json.gz", streams=f"{prefix}streams.json.gz")
+
+
+def legacy_prefix(athlete_id: int) -> str:
+    """The former archive layout (from the Go server): `metadata/{id}.json` and `tracks/{id}.gpx`."""
+    return f"activities/{athlete_id}/"
 
 
 @frozen
@@ -64,32 +82,95 @@ class BlobStore:
         )
         return cls(s3=s3, bucket=config.bucket_name)
 
-    async def put(self, key: str, data: bytes, content_type: str) -> None:
+    async def put(self, key: str, data: bytes, content_type: str, content_encoding: str | None = None) -> None:
         """Write an object, replacing any existing one at `key`."""
-        await asyncio.to_thread(self.s3.put_object, Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
+        request: PutObjectRequestTypeDef = {"Bucket": self.bucket, "Key": key, "Body": data, "ContentType": content_type}
+        if content_encoding:
+            request["ContentEncoding"] = content_encoding
+        await asyncio.to_thread(lambda: self.s3.put_object(**request))
         logger.debug("wrote blob", extra={"bucket": self.bucket, "key": key, "bytes": len(data)})
 
-    async def persist_activity(self, strava: StravaClient, activity_id: str) -> PersistedActivity:
-        """Archive an activity: fetch its details and GPX track from Strava and upload both.
+    async def get(self, key: str) -> bytes | None:
+        """Read an object; None if there's none at `key`."""
+        try:
+            response = await asyncio.to_thread(self.s3.get_object, Bucket=self.bucket, Key=key)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                return None
+            raise
+        return await asyncio.to_thread(response["Body"].read)
+
+    async def list_keys(self, prefix: str) -> list[str]:
+        """Every key under `prefix`."""
+
+        def list_all() -> list[str]:
+            pages = self.s3.get_paginator("list_objects_v2").paginate(Bucket=self.bucket, Prefix=prefix)
+            return [obj["Key"] for page in pages for obj in page.get("Contents", [])]
+
+        return await asyncio.to_thread(list_all)
+
+    async def delete_keys(self, keys: list[str]) -> None:
+        """Delete objects (missing ones are ignored)."""
+        for start in range(0, len(keys), 1000):  # S3's limit per request
+            batch: list[ObjectIdentifierTypeDef] = [{"Key": key} for key in keys[start : start + 1000]]
+            await asyncio.to_thread(self.s3.delete_objects, Bucket=self.bucket, Delete={"Objects": batch, "Quiet": True})
+        logger.info("deleted blobs", extra={"bucket": self.bucket, "count": len(keys)})
+
+    async def delete_prefix(self, prefix: str) -> int:
+        """Delete everything under `prefix`; returns how many objects were deleted."""
+        keys = await self.list_keys(prefix)
+        await self.delete_keys(keys)
+        return len(keys)
+
+    # --- activities
+
+    async def archive_activity(self, strava: StravaClient, athlete_id: int, activity_id: int) -> ActivitySummary:
+        """Archive an activity: fetch its details and every stream from Strava and upload them (gzipped).
 
         Args:
             strava: Client acting for the activity's owner.
+            athlete_id: The owner.
             activity_id: Strava activity id.
 
         Returns:
-            Where the files were written (see `activity_keys`).
+            The activity's index row.
 
         Raises:
-            StravaError: Fetching the activity or its track failed.
+            StravaError: Fetching the activity or its streams failed.
             botocore.exceptions.ClientError: An upload failed.
         """
-        activity = await strava.get_activity(activity_id)
-        track = await strava.export_activity_gpx(activity)
-        keys = activity_keys(activity.athlete.id, activity.id)
-        await self.put(keys.metadata_key, converter.dumps(activity).encode(), "application/json")
-        await self.put(keys.track_key, track, "application/gpx+xml")
-        logger.info(
-            "persisted activity",
-            extra={"athlete_id": activity.athlete.id, "activity_id": activity.id, "bucket": self.bucket},
-        )
-        return keys
+        activity = await strava.get_activity_json(str(activity_id))
+        streams = await strava.get_streams_json(str(activity_id), ARCHIVE_STREAM_KEYS)
+        keys = archive_keys(athlete_id, activity_id)
+        await self.put(keys.activity, gzip.compress(activity), "application/json", "gzip")
+        await self.put(keys.streams, gzip.compress(streams), "application/json", "gzip")
+        logger.info("archived activity", extra={"athlete_id": athlete_id, "activity_id": activity_id, "bucket": self.bucket})
+        return loads(activity, ActivitySummary)
+
+    async def read_activity(self, athlete_id: int, activity_id: int) -> tuple[StravaActivity, list[RawStream]] | None:
+        """An archived activity's details and streams; None if it isn't archived."""
+        keys = archive_keys(athlete_id, activity_id)
+        activity, streams = await self.get(keys.activity), await self.get(keys.streams)
+        if activity is None or streams is None:
+            return None
+        return loads(gzip.decompress(activity), StravaActivity), loads(gzip.decompress(streams), list[RawStream])
+
+    async def archived_activity_ids(self, athlete_id: int) -> set[int]:
+        """Activities archived in full (their streams are written last)."""
+        pattern = re.compile(rf"^{re.escape(athlete_prefix(athlete_id))}activities/(\d+)/streams\.json\.gz$")
+        keys = await self.list_keys(f"{athlete_prefix(athlete_id)}activities/")
+        return {int(match[1]) for key in keys if (match := pattern.match(key))}
+
+    async def delete_activity(self, athlete_id: int, activity_id: int) -> None:
+        """Delete an archived activity."""
+        keys = archive_keys(athlete_id, activity_id)
+        await self.delete_keys([keys.activity, keys.streams])
+
+    async def delete_athlete(self, athlete_id: int) -> int:
+        """Delete everything archived for an athlete, in both layouts; returns how many objects were deleted."""
+        return await self.delete_prefix(athlete_prefix(athlete_id)) + await self.delete_prefix(legacy_prefix(athlete_id))
+
+    async def legacy_activity_ids(self, athlete_id: int) -> set[int]:
+        """Activities in the former layout (`activities/{athlete}/metadata/{id}.json`)."""
+        pattern = re.compile(rf"^{re.escape(legacy_prefix(athlete_id))}metadata/(\d+)\.json$")
+        return {int(m[1]) for key in await self.list_keys(legacy_prefix(athlete_id)) if (m := pattern.match(key))}

@@ -21,6 +21,7 @@ from skintrackr.server.auth import (
 )
 from skintrackr.server.errors import fail_with
 from skintrackr.server.services import Services, get_services
+from skintrackr.server.webhooks import ensure_subscription
 
 logger = get_logger(__name__)
 
@@ -65,10 +66,15 @@ async def connect(state: State) -> Redirect:
 
 @get("/callback")
 async def callback(state: State, code: FromQuery[str | None] = None) -> Redirect:
-    """Store the athlete's tokens, sign the browser in, and show the confirmation page."""
+    """Store the athlete's tokens, sign the browser in, and show the confirmation page.
+
+    The app's one webhook subscription delivers events for every athlete who authorized it, so connecting only
+    needs it to exist.
+    """
     services = get_services(state)
     token = await exchange_and_save(services, code, "oauth2 callback")
     jwt = await issue_token(services, token.athlete.id)
+    ensure_subscription(services)
     return Redirect(CONFIRMATION_PAGE, cookies=[session_cookie(jwt)])
 
 

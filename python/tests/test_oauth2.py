@@ -6,7 +6,7 @@ from litestar.testing import TestClient
 
 from skintrackr.crypto import verify_jwt
 from skintrackr.server.auth import SESSION_COOKIE
-from tests.conftest import ATHLETE_ID, SECRET, FakeStrava, issue_api_token, session, with_store
+from tests.conftest import ATHLETE_ID, SECRET, FakeStrava, issue_api_token, session, wait_for_background, with_store
 
 TOKEN_RESPONSE = {
     "token_type": "Bearer",
@@ -47,6 +47,9 @@ def test_callback_saves_token_and_signs_in(client: TestClient, strava: FakeStrav
     assert claims.athlete_id == ATHLETE_ID
     # recorded, so logging out can revoke it
     assert with_store(redis_server, lambda s: s.redis.exists(f"jwt:jti:{claims.jti}")) == 1
+    # the app's webhook subscription is checked (it covers every athlete who connects)
+    wait_for_background(client)
+    assert strava.last("GET", "/api/v3/push_subscriptions")
 
 
 def test_session_cookie_authenticates(client: TestClient, redis_server: FakeServer) -> None:
