@@ -140,7 +140,7 @@ def test_persist(client: TestClient, intervals: FakeIntervals, bucket: FakeBucke
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "activityId": ACTIVITY_ID}
-    assert bucket.keys() == {KEYS.activity, KEYS.streams}
+    assert bucket.keys() == {KEYS.activity, KEYS.streams, KEYS.track}
     assert [a.id for a in with_store(redis_server, lambda s: s.activities(ATHLETE_ID))] == [ACTIVITY_ID]
 
 
@@ -168,7 +168,7 @@ def test_import_runs_in_the_background(client: TestClient, intervals: FakeInterv
 
     status = client.get(IMPORT, headers=headers).json()
     assert (status["state"], status["activities"], status["tracks_done"], status["tracks_total"]) == ("done", 1, 1, 1)
-    assert bucket.keys() == {KEYS.activity, KEYS.streams}
+    assert bucket.keys() == {KEYS.activity, KEYS.streams, KEYS.track}
 
 
 def test_import_status_before_any_import(client: TestClient, redis_server: FakeServer) -> None:
