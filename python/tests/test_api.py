@@ -32,6 +32,8 @@ EXPORT = f"/api/activity/{ACTIVITY_ID}/export"
 PERSIST = f"/api/activity/{ACTIVITY_ID}/persist"
 VERT = "/api/stats/vert"
 IMPORT = "/api/import"
+ACTIVITIES = "/api/activities"
+TRACKS = "/api/tracks.pmtiles"
 KEYS = archive_keys(ATHLETE_ID, ACTIVITY_ID)
 
 
@@ -42,7 +44,7 @@ def request(client: TestClient, path: str, headers: dict[str, str] | None = None
 # --- authentication (shared by all routes)
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
 @pytest.mark.parametrize(
     ("headers", "status", "message"),
     [
@@ -59,19 +61,19 @@ def test_requires_valid_token(
     assert intervals.requests == []
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
 def test_rejects_expired_token(client: TestClient, path: str) -> None:
     token, _ = generate_jwt(ATHLETE_ID, SECRET, timedelta(hours=1), now=time.time() - 7200)
     assert request(client, path, bearer(token)).status_code == 403
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
 def test_rejects_token_signed_with_another_secret(client: TestClient, path: str) -> None:
     token, _ = generate_jwt(ATHLETE_ID, "f" * 64, timedelta(hours=1))
     assert request(client, path, bearer(token)).status_code == 403
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
 def test_rejects_revoked_token(client: TestClient, redis_server: FakeServer, path: str) -> None:
     token = issue_api_token(redis_server)
     assert client.post("/token/revoke", headers=bearer(token)).status_code == 200
@@ -211,3 +213,40 @@ def test_vert_stats_defaults_to_the_server_date(client: TestClient, redis_server
 def test_vert_stats_rejects_far_off_dates(client: TestClient, redis_server: FakeServer) -> None:
     response = client.get(VERT, params={"today": "2001-01-01"}, headers=bearer(issue_api_token(redis_server)))
     assert (response.status_code, response.json()) == (400, {"message": "today must be within a day of the current date"})
+
+
+# --- map
+
+
+def test_activities(client: TestClient, redis_server: FakeServer) -> None:
+    rows = [ActivitySummary(id="i1", name="Skin", type="BackcountrySki"), ActivitySummary(id="i2", type="Ride")]
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, rows))
+    with_store(redis_server, lambda s: s.save_activities("i777", [ActivitySummary(id="other")]))
+    response = client.get(ACTIVITIES, headers=session(issue_api_token(redis_server)))
+    assert response.status_code == 200
+    assert sorted(a["id"] for a in response.json()) == ["i1", "i2"]
+    assert next(a for a in response.json() if a["id"] == "i1")["name"] == "Skin"
+
+
+def test_tracks_before_any_build(client: TestClient, redis_server: FakeServer) -> None:
+    response = client.get(TRACKS, headers=session(issue_api_token(redis_server)))
+    assert (response.status_code, response.json()) == (404, {"message": "no map tracks yet"})
+
+
+def test_tracks_whole_and_ranged(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    bucket.put(tracks_key(ATHLETE_ID), b"PMTiles-0123456789")
+    bucket.put(tracks_key("i777"), b"someone else's")
+    headers = session(issue_api_token(redis_server))
+
+    whole = client.get(TRACKS, headers=headers)
+    assert (whole.status_code, whole.content) == (200, b"PMTiles-0123456789")
+    assert whole.headers["content-type"] == "application/vnd.pmtiles"
+    assert (whole.headers["accept-ranges"], whole.headers["cache-control"]) == ("bytes", "private, no-cache")
+    assert "content-range" not in whole.headers
+
+    part = client.get(TRACKS, headers={**headers, "Range": "bytes=0-6"})
+    assert (part.status_code, part.content, part.headers["content-range"]) == (206, b"PMTiles", "bytes 0-6/18")
+    assert part.headers["etag"] == whole.headers["etag"]
+
+    beyond = client.get(TRACKS, headers={**headers, "Range": "bytes=100-200"})
+    assert (beyond.status_code, beyond.json()) == (416, {"message": "range not satisfiable"})
