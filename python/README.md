@@ -22,6 +22,10 @@ just py-check   # uv run ty check
 
 `uv run skintrackr migrate --help` lists the data migrations (see [Migrations](#migrations)).
 
+The map's tracks are built with [tippecanoe](https://github.com/felt/tippecanoe) (2.79.0, the version the Dockerfile
+builds), which isn't a Python package: install it with `brew install tippecanoe`. Without it, everything else works,
+map rebuilds log an error, and the test that runs it is skipped (CI always runs it).
+
 ## Configuration
 
 | Variable | Required | Default | Description |
@@ -56,7 +60,9 @@ settings fail at startup (`ConfigError`).
 | `GET /api/activity/{id}/export` | bearer | The activity as a GPX download: from the bucket if archived, else straight from intervals.icu |
 | `POST /api/activity/{id}/persist` | bearer | Archive and index the activity: `{"ok": true, "activityId": id}` |
 | `POST /api/import` | bearer | Start a bulk import (Re-sync) of the athlete's activities (202; no-op if one is running); answers with its status |
-| `GET /api/import` | bearer | Import progress: `{"state": "idle"\|"running"\|"done"\|"failed", "activities", "tracks_done", "tracks_total", "skipped", "error"}` |
+| `GET /api/import` | bearer | Import progress: `{"state": "idle"\|"running"\|"done"\|"failed", "activities", "tracks_done", "tracks_total", "skipped", "map_tracks_omitted", "error"}` |
+| `GET /api/activities` | bearer | The athlete's activity index (`ActivitySummary` objects, in no particular order), for the map |
+| `GET /api/tracks.pmtiles` | bearer | The athlete's map tracks (PMTiles), whole or by HTTP `Range` (206), with an `ETag`; 404 before the first build |
 | `GET /api/stats/vert?today=YYYY-MM-DD` | bearer | On-foot vert from Jan 1 to today's date, this year and the 5 before, from the activity index: `{"as_of", "activities", "years": [{"year", "vert_m"}, ...]}` |
 
 "bearer" routes take the API token as `Authorization: Bearer <token>` (from `/token/new`) or, when there's no
@@ -76,7 +82,8 @@ Activities are stored twice (`server/ingest.py`):
 
 - **Bucket (source of truth):** each activity in full, as intervals.icu sent it, gzipped:
   `athletes/{athlete}/activities/{activity}/activity.json.gz` and `.../streams.json.gz` (every stream recorded).
-  GPX exports are built from these.
+  GPX exports are built from these. Derived from the streams, for the map: `.../track.geojson.gz` (the
+  simplified track, for activities with positions) and `athletes/{athlete}/tracks.pmtiles` (see [Map tracks](#map-tracks)).
 - **Redis index (derived, rebuildable):** `athlete:{id}:activities`, one compact `ActivitySummary` per activity
   (type, local start date, elevation, distance, moving time, `icu_sync_date`). Stats read only this.
 
@@ -94,6 +101,19 @@ They get there three ways:
 
 intervals.icu doesn't serve activities synced to it from Strava through its API (it lists them as stubs with
 `source: STRAVA`); they're skipped and counted in the import's `skipped`.
+
+### Map tracks
+
+The map draws each athlete's tracks from `tracks.pmtiles`, vector tiles built with tippecanoe (`tracks.py`)
+from their `track.geojson.gz` files: each activity's `latlng` stream, split at GPS dropouts and simplified with
+Douglas–Peucker at 2 m, with the `id`, `type` and `date` (`YYYYMMDD`) the map filters on. Ingesting or removing
+an activity schedules a rebuild in the background (`schedule_tracks`): straight away, then at most once a minute
+while changes keep coming.
+
+Rebuilds cost ~7.4 ms of CPU per track (`docs/benchmarks/tippecanoe-rebuild`), so the archive holds only the
+**3,000 most recent** activities with a track (`MAP_TRACKS_LIMIT`). Older ones are still synced, archived and
+counted in stats. A build over the limit logs a WARN (`map tracks limited`, with the counts), and a finished
+import records how many were left off (`map_tracks_omitted`), which the Re-sync panel shows.
 
 ### Rate limits
 
@@ -113,6 +133,7 @@ settings from the environment and asks for confirmation unless given `--yes`.
 | Migration | |
 | --- | --- |
 | `intervals-reset` | The move to intervals.icu (2026-11): deletes everything in the bucket and every skintrackr key in Redis (keys matching `APP_KEY_PATTERNS`; other keys are left alone). Safe to re-run. |
+| `build-tracks [--athlete ID ...]` | The activity map (2026-11): writes `track.geojson.gz` for every archived activity from its streams, then builds each athlete's `tracks.pmtiles` (every connected athlete, or those given). Rewrites them all, so it's safe to re-run, e.g. after changing how tracks are simplified. Needs tippecanoe. |
 | `legacy-layout --athlete ID [--allow-missing]` | The move from the Go server's `activities/{athlete}/metadata/{id}.json` and `tracks/{id}.gpx` to the `athletes/` layout: deletes the former once every activity is in the latter. Since intervals.icu's ids differ, use `--allow-missing` (or `intervals-reset`). |
 
 ## Layout
@@ -124,6 +145,7 @@ skintrackr/
   models.py          attrs types for intervals.icu data, and the shared cattrs converter
   gpx.py             GPX 1.1 documents from activity streams
   vert.py            year-to-date vert from an athlete's activity index
+  tracks.py          map tracks: simplified track features, which go on the map, tippecanoe builds
   logging.py         JSON-lines logging; structured context via `extra=`
   clients/
     intervals.py     IntervalsClient: every intervals.icu request (athletes, activities, streams), rate limits
@@ -132,7 +154,7 @@ skintrackr/
   server/
     app.py           create_app(): routes, the frontend build, lifespan, error handlers
     services.py      Services shared by handlers (on app.state), and background tasks
-    ingest.py        ingesting activities: sync, bulk imports, removal
+    ingest.py        ingesting activities: sync, bulk imports, removal, map track rebuilds
     auth.py          authenticate_request(): bearer token or session cookie -> AuthTokenInfo
     errors.py        `{"message": ...}` error responses and fail_with()
     connect.py  token_api.py  api.py    route handlers
