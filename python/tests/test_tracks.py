@@ -41,11 +41,11 @@ def coordinates(feature: dict[str, Any] | None) -> Any:
 
 
 def test_track_feature_properties_and_rounding() -> None:
-    feature = track_feature(ACTIVITY, latlng([(47.123456789, -121.987654321), (47.2, -121.9)]))
+    feature = track_feature(ACTIVITY, latlng([(47.123456789, -121.987654321), (47.1235, -121.9876)]))
     assert feature == {
         "type": "Feature",
         "properties": {"id": "i1", "type": "BackcountrySki", "date": 20250203},
-        "geometry": {"type": "LineString", "coordinates": [[-121.987654, 47.123457], [-121.9, 47.2]]},
+        "geometry": {"type": "LineString", "coordinates": [[-121.987654, 47.123457], [-121.9876, 47.1235]]},
     }
 
 
@@ -59,11 +59,22 @@ def test_track_feature_simplifies_within_two_metres() -> None:
     assert kept[0] == [-121.0, 47.0] and len(kept) <= 8
 
 
+def test_track_feature_joins_fixes_across_samples_without_positions() -> None:
+    # as watches record: a fix every few samples, 10 m apart, heading north then east (so no point simplifies away)
+    fixes = [(47.0 + min(i, 3) * 10 * METRE, -121.0 + max(i - 3, 0) * 10 * METRE / math.cos(math.radians(47))) for i in range(6)]
+    samples: list[tuple[float, float] | None] = [None]
+    for fix in fixes:
+        samples += [fix, None, None]
+    corners = [fixes[0], fixes[3], fixes[5]]
+    assert coordinates(track_feature(ACTIVITY, latlng(samples))) == [[round(lon, 6), round(lat, 6)] for lat, lon in corners]
+
+
 def test_track_feature_splits_at_gps_dropouts() -> None:
-    feature = track_feature(ACTIVITY, latlng([(47.0, -121.0), (47.1, -121.1), None, None, (47.2, -121.2), (47.3, -121.3), None, (47.4, -121.4)]))
+    # 1 km between the second and third fixes; the lone fix 1 km after that isn't a line
+    north = [(47.0 + i * 10 * METRE, -121.0) for i in (0, 1, 101, 102, 202)]
+    feature = track_feature(ACTIVITY, latlng([north[0], north[1], None, north[2], north[3], north[4]]))
     assert feature is not None and feature["geometry"]["type"] == "MultiLineString"
-    # the lone point after the last dropout isn't a line
-    assert coordinates(feature) == [[[-121.0, 47.0], [-121.1, 47.1]], [[-121.2, 47.2], [-121.3, 47.3]]]
+    assert coordinates(feature) == [[[-121.0, 47.0], [-121.0, 47.00009]], [[-121.0, 47.009073], [-121.0, 47.009163]]]
 
 
 @pytest.mark.parametrize(
@@ -71,7 +82,7 @@ def test_track_feature_splits_at_gps_dropouts() -> None:
     [
         [],  # manual activity
         [Stream(type="heartrate", data=[100, 110])],  # indoor
-        latlng([(47.0, -121.0), None, (47.1, -121.1)]),  # no two positions in a row
+        latlng([(47.0, -121.0), None, (47.1, -121.1)]),  # two fixes, 13 km apart
     ],
 )
 def test_track_feature_without_positions(streams: list[Stream]) -> None:
@@ -105,7 +116,7 @@ def test_map_track_ids_limit(count: int, omitted: int) -> None:
 
 @pytest.mark.skipif(shutil.which("tippecanoe") is None, reason="tippecanoe isn't installed (CI installs it)")
 def test_build_pmtiles() -> None:
-    feature = track_feature(ACTIVITY, latlng([(47.0, -121.0), (47.01, -121.01), (47.02, -121.0)]))
+    feature = track_feature(ACTIVITY, latlng([(47.0, -121.0), (47.001, -121.001), (47.002, -121.0)]))
     assert feature is not None
     archive = asyncio.run(build_pmtiles([encode_feature(feature)]))
     assert archive[:7] == b"PMTiles" and archive[7] == 3  # magic and spec version

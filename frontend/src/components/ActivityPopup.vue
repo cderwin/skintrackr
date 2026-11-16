@@ -1,10 +1,13 @@
 <script setup lang="ts">
 // A clicked track's details, inside the map's popup. Where tracks overlap, the others under the click are listed
-// below, to switch between them.
+// below (the newest `LIMIT`, with a count of the rest), to switch between them.
 import { computed } from 'vue'
 import { intervalsActivityUrl, type ActivitySummary } from '@/api'
 import { formatDistance, formatVert } from '@/settings'
 import { sportColor, sportLabel } from '@/sports'
+
+// activities listed where tracks overlap
+const LIMIT = 5
 
 const props = defineProps<{
   /** The activities under the click, newest first. */
@@ -14,6 +17,12 @@ const props = defineProps<{
 defineEmits<{ select: [id: string] }>()
 
 const activity = computed(() => props.activities.find((a) => a.id === props.selectedId) ?? props.activities[0])
+const listed = computed(() => props.activities.slice(0, LIMIT))
+const count = computed(() =>
+  props.activities.length > LIMIT
+    ? `${LIMIT} of ${props.activities.length} activities here · zoom in to see the rest`
+    : `${props.activities.length} activities here`,
+)
 
 function formatDate(value: string): string {
   const [year, month, day] = value.slice(0, 10).split('-').map(Number)
@@ -42,9 +51,9 @@ function formatDate(value: string): string {
     <a :href="intervalsActivityUrl(activity.id)" target="_blank" rel="noopener noreferrer">Open in intervals.icu ↗</a>
 
     <div v-if="activities.length > 1" class="others">
-      <p>{{ activities.length }} activities here</p>
+      <p>{{ count }}</p>
       <button
-        v-for="other in activities"
+        v-for="other in listed"
         :key="other.id"
         type="button"
         :class="{ current: other.id === activity.id }"
@@ -66,7 +75,7 @@ function formatDate(value: string): string {
 }
 
 h3 {
-  margin: 0 18px 8px 0;
+  margin: 0 24px 8px 0;
   font-size: 15px;
   line-height: 1.3;
   color: #0f172a;

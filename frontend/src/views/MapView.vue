@@ -21,10 +21,16 @@ const CASCADES: [number, number] = [-121.4, 47.9]
 // the archive's layer (tracks.LAYER on the server)
 const LAYER = 'tracks'
 const HIT_LAYER = 'tracks-hit'
-// pixels around a click that count as on a track
-const HIT_SLOP = 6
-// activities listed in a popup where tracks overlap
-const POPUP_LIMIT = 5
+// pixels from a click that count as on a track, measured on screen
+const HIT_RADIUS = 10
+// half-size of the box that finds candidate tracks: on a steeply tilted map MapLibre measures line widths at the
+// center's scale, so distant tracks only match boxes much larger than they look; `tracksAt` checks them on screen
+const CANDIDATE_SLOP = 96
+// the style's hiking and cycling routes (e.g. the PCT), drawn in bright colors that clash with the tracks; they
+// get the style's own colors for paths
+const ROUTES_LAYER = 'trail'
+const MUTED_ROUTE = 'hsl(24, 10%, 60%)'
+const MUTED_ROUTE_LABEL = 'hsl(24, 10%, 40%)'
 
 maplibregl.setWorkerUrl(workerUrl)
 const pmtiles = new Protocol()
@@ -73,9 +79,61 @@ onMounted(() => {
     })
     map?.setTerrain({ source: 'terrain', exaggeration: 1 })
     map?.addControl(new maplibregl.TerrainControl({ source: 'terrain' }), 'bottom-right')
+    if (map) muteRoutes(map)
     resolveMapLoaded()
   })
+  window.addEventListener('keydown', closeOnEscape)
 })
+
+function closeOnEscape(event: KeyboardEvent): void {
+  if (event.key === 'Escape') popup?.remove()
+}
+
+function muteRoutes(m: maplibregl.Map): void {
+  for (const layer of m.getStyle().layers) {
+    if (!('source-layer' in layer) || layer['source-layer'] !== ROUTES_LAYER || layer.id.endsWith('outline')) continue
+    if (layer.type === 'line') m.setPaintProperty(layer.id, 'line-color', MUTED_ROUTE)
+    else if (layer.type === 'symbol') m.setPaintProperty(layer.id, 'text-color', MUTED_ROUTE_LABEL)
+  }
+}
+
+/** Pixels from `point` to the nearest segment of a screen-space polyline. */
+function distanceToLine(point: maplibregl.Point, line: maplibregl.Point[]): number {
+  if (line.length === 1) return point.dist(line[0]!)
+  let nearest = Infinity
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1]!
+    const b = line[i]!
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const length2 = dx * dx + dy * dy
+    const t = length2 ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length2)) : 0
+    nearest = Math.min(nearest, Math.hypot(point.x - a.x - t * dx, point.y - a.y - t * dy))
+  }
+  return nearest
+}
+
+/** Ids of the tracks within `HIT_RADIUS` pixels of `point`, measured on screen (so tilt and terrain don't skew it). */
+function tracksAt(m: maplibregl.Map, point: maplibregl.Point): Set<string> {
+  const { x, y } = point
+  const candidates = m.queryRenderedFeatures(
+    [
+      [x - CANDIDATE_SLOP, y - CANDIDATE_SLOP],
+      [x + CANDIDATE_SLOP, y + CANDIDATE_SLOP],
+    ],
+    { layers: [HIT_LAYER] },
+  )
+  const onScreen = (line: number[][]) => line.map(([lon, lat]) => m.project([lon!, lat!]))
+  const ids = new Set<string>()
+  for (const feature of candidates) {
+    const id = String(feature.properties.id)
+    const { geometry } = feature
+    const lines: number[][][] =
+      geometry.type === 'LineString' ? [geometry.coordinates] : geometry.type === 'MultiLineString' ? geometry.coordinates : []
+    if (!ids.has(id) && lines.some((line) => distanceToLine(point, onScreen(line)) <= HIT_RADIUS)) ids.add(id)
+  }
+  return ids
+}
 
 function addTracks(m: maplibregl.Map): void {
   m.addSource(LAYER, { type: 'vector', url: `pmtiles://${TRACKS_URL}` })
@@ -109,19 +167,9 @@ function addTracks(m: maplibregl.Map): void {
   m.on('mouseenter', HIT_LAYER, () => (m.getCanvas().style.cursor = 'pointer'))
   m.on('mouseleave', HIT_LAYER, () => (m.getCanvas().style.cursor = ''))
   m.on('click', (event) => {
-    const { x, y } = event.point
-    const hits = m.queryRenderedFeatures(
-      [
-        [x - HIT_SLOP, y - HIT_SLOP],
-        [x + HIT_SLOP, y + HIT_SLOP],
-      ],
-      { layers: [HIT_LAYER] },
-    )
-    const ids = new Set(hits.map((feature) => String(feature.properties.id)))
-    const found = [...ids]
+    const found = [...tracksAt(m, event.point)]
       .flatMap((id) => byId.value.get(id) ?? [])
       .sort((a, b) => b.start_date_local.localeCompare(a.start_date_local))
-      .slice(0, POPUP_LIMIT)
     if (!found.length) {
       popup?.remove()
       return
@@ -182,6 +230,7 @@ watch(signedIn, async (value) => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', closeOnEscape)
   popup?.remove()
   map?.remove()
 })
@@ -213,6 +262,24 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: 0;
   z-index: 10;
+}
+
+/* MapLibre's close button sits flush in the corner; inset it evenly from the top and right */
+.map :deep(.maplibregl-popup-close-button) {
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  color: #64748b;
+  font-size: 18px;
+  line-height: 24px;
+}
+
+.map :deep(.maplibregl-popup-close-button:hover) {
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 .notice {
