@@ -181,11 +181,13 @@ Recipes in the root `justfile`; `py-*` recipes run in `python/`, and `test`/`che
 
 ```bash
 just py-sync       # uv sync (installs dev tools too)
-just py-serve      # run the server with .env loaded (needs Redis)
+just deps-up       # docker compose: just Redis (:6379) and SeaweedFS (:8333, the local S3 stand-in, bucket created)
+just py-serve      # run the server against deps-up, with the rest of .env loaded
+just py-cli ...    # a skintrackr command (e.g. `migrate ...`) against deps-up
 just test          # all tests (py-test: uv run pytest)
 just check         # all static checks (py-check: uv run ty check)
 just build         # build the production Docker image
-just dev-up        # docker compose: app + Redis on http://localhost:8080
+just dev-up        # docker compose: app + Redis + SeaweedFS on http://localhost:8080
 just compose-logs  # follow logs
 just dev-down      # stop the stack
 just compose-restart  # restart just the app
@@ -214,7 +216,7 @@ Required environment variables (see `.env.example` and `python/README.md`):
 - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` - Keys for the S3-compatible blob store
 - `VITE_MAPTILER_KEY` - (frontend build only) public MapTiler key for the map page; a Docker build arg, from `.env` locally and a GitHub secret in the deploy workflow
 
-The blob-storage bucket name and endpoint are defaults in `BlobStorageConfig` in `config.py`.
+The blob-storage bucket name and endpoint default (in `BlobStorageConfig` in `config.py`) to production's; `S3_BUCKET_NAME`/`S3_ENDPOINT_URL` override them. Local runs (`just dev-up`, `py-serve`, `py-cli`) always use the local SeaweedFS and Redis from `docker-compose.yml`, with the fixed credentials in `seaweedfs/s3.json`, never production's: keep it that way, and don't run the server or migrations locally against the production bucket.
 
 ### Frontend
 

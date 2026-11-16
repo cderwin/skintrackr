@@ -14,6 +14,33 @@ services:
       timeout: 3s
       retries: 5
 
+  # Local stand-in for Tigris (S3-compatible), so local runs never touch the production bucket
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.51
+    container_name: skintrackr-seaweedfs
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -volume.max=0
+    ports:
+      - "8333:8333"   # S3 API
+    volumes:
+      - seaweedfs-data:/data
+      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Creates the bucket (once; it's kept in the seaweedfs-data volume)
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.51
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - echo "s3.bucket.list" | weed shell -master=seaweedfs:9333 | grep -q skintrackr-storage
+        || echo "s3.bucket.create -name skintrackr-storage" | weed shell -master=seaweedfs:9333
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+
   app:
     build:
       context: .
@@ -30,17 +57,22 @@ services:
       # Redis connection - points to the redis service
       UPSTASH_REDIS_URL: redis://redis:6379
 
-      # S3-compatible blob storage credentials
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # Blob storage: the local SeaweedFS, never production (credentials from seaweedfs/s3.json)
+      S3_ENDPOINT_URL: http://seaweedfs:8333
+      AWS_ACCESS_KEY_ID: skintrackr-local
+      AWS_SECRET_ACCESS_KEY: skintrackr-local-secret
 
       # Optional: Debug flag for HTTP response serialization
       DEBUG_INTERVALS_RESPONSE_BODY: ${DEBUG_INTERVALS_RESPONSE_BODY:-false}
     depends_on:
       redis:
         condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
   redis-data:
+    driver: local
+  seaweedfs-data:
     driver: local

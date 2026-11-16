@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 
 from skintrackr.clients.intervals import DEFAULT_LIMITS
-from skintrackr.config import DEFAULT_BUCKET_NAME, DEFAULT_S3_ENDPOINT, Config, ConfigError
+from skintrackr.config import DEFAULT_BUCKET_NAME, DEFAULT_S3_ENDPOINT, BlobStorageConfig, Config, ConfigError
 from tests.conftest import SECRET
 
 ENV = {
@@ -35,9 +35,14 @@ def test_optional_settings() -> None:
             "INTERVALS_RATE_LIMIT_DAILY": "1000",
             "SYNC_INTERVAL_MINUTES": "5",
             "SYNC_WINDOW_DAYS": "7",
+            "S3_BUCKET_NAME": "local",
+            "S3_ENDPOINT_URL": "http://localhost:8333",
         }
     )
     assert config.rate_limits == (100, 1000)
+    assert config.blob_storage == BlobStorageConfig(
+        access_key_id="key", secret_access_key="aws-secret", bucket_name="local", endpoint_url="http://localhost:8333"
+    )
     assert (config.sync_interval, config.sync_window) == (timedelta(minutes=5), timedelta(days=7))
 
 

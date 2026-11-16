@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "skintrackr",
+      "credentials": [{ "accessKey": "skintrackr-local", "secretKey": "skintrackr-local-secret" }],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

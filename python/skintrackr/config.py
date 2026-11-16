@@ -47,8 +47,8 @@ class BlobStorageConfig:
     Attributes:
         access_key_id: `AWS_ACCESS_KEY_ID`.
         secret_access_key: `AWS_SECRET_ACCESS_KEY`.
-        bucket_name: Bucket activities are archived to.
-        endpoint_url: S3 API endpoint.
+        bucket_name: Bucket activities are archived to (`S3_BUCKET_NAME`).
+        endpoint_url: S3 API endpoint (`S3_ENDPOINT_URL`; e.g. the local SeaweedFS in docker-compose.yml).
     """
 
     access_key_id: str
@@ -61,7 +61,12 @@ class BlobStorageConfig:
         """Load from the environment; raises ConfigError if the credentials are missing."""
         env = os.environ if env is None else env
         access_key_id, secret_access_key = _require(env, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-        return cls(access_key_id=access_key_id, secret_access_key=secret_access_key)
+        return cls(
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            bucket_name=env.get("S3_BUCKET_NAME") or DEFAULT_BUCKET_NAME,
+            endpoint_url=env.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT,
+        )
 
 
 @frozen

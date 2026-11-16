@@ -14,7 +14,8 @@ From the repository root (or the plain `uv run ...` commands in this directory):
 
 ```sh
 just py-sync    # uv sync: install, including dev tools
-just py-serve   # uv run skintrackr serve, with ../.env loaded (0.0.0.0:8080; needs Redis)
+just py-serve   # uv run skintrackr serve, with ../.env loaded, against `just deps-up`'s Redis and SeaweedFS (0.0.0.0:8080)
+just py-cli     # uv run skintrackr ..., likewise
 just py-test    # uv run pytest
 just py-check   # uv run ty check
 ```
@@ -27,7 +28,9 @@ just py-check   # uv run ty check
 | --- | --- | --- | --- |
 | `APP_SECRET` | yes | | Hex key, at least 32 bytes (`openssl rand -hex 32`); signs JWTs and encrypts stored API keys |
 | `UPSTASH_REDIS_URL` | yes | | Redis URL |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | yes | | Blob storage credentials (bucket `skintrackr-storage` at `https://t3.storage.dev`) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | yes | | Blob storage credentials |
+| `S3_ENDPOINT_URL` | no | `https://t3.storage.dev` | The S3-compatible endpoint (Tigris); locally, SeaweedFS's `http://localhost:8333` |
+| `S3_BUCKET_NAME` | no | `skintrackr-storage` | The bucket activities are archived to |
 | `SYNC_INTERVAL_MINUTES` | no | `15` | How often connected athletes' recent activities are synced |
 | `SYNC_WINDOW_DAYS` | no | `30` | How far back each sync looks, by activity start date |
 | `INTERVALS_RATE_LIMIT_15MIN`, `INTERVALS_RATE_LIMIT_DAILY` | no | `6250`, `50000` | intervals.icu request budgets, until responses report the limits |
