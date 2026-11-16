@@ -4,6 +4,10 @@ Layout (the bucket is the source of truth; the Redis activity index is derived f
 
     athletes/{athlete}/activities/{activity}/activity.json.gz   intervals.icu's activity JSON, as received
     athletes/{athlete}/activities/{activity}/streams.json.gz    intervals.icu's streams JSON, every type recorded
+    athletes/{athlete}/activities/{activity}/track.geojson.gz   the simplified track (`tracks.track_feature`), if any
+    athletes/{athlete}/tracks.pmtiles                           the map's vector tiles of the athlete's tracks
+
+The track and the archive are derived from the streams, so they can be rebuilt (`skintrackr migrate build-tracks`).
 
 The former Go server's layout (`activities/{athlete}/metadata/{id}.json` and `tracks/{id}.gpx`) is no longer
 written; the `skintrackr migrate` commands delete it.
@@ -12,22 +16,34 @@ written; the `skintrackr migrate` commands delete it.
 import asyncio
 import gzip
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Self
 
 import boto3
 from attrs import frozen
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from skintrackr.clients.intervals import IntervalsClient
 from skintrackr.config import BlobStorageConfig
 from skintrackr.logging import get_logger
 from skintrackr.models import Activity, ActivitySummary, Stream, loads
+from skintrackr.tracks import encode_feature, track_feature
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
-    from mypy_boto3_s3.type_defs import ObjectIdentifierTypeDef, PutObjectRequestTypeDef
+    from mypy_boto3_s3.type_defs import GetObjectRequestTypeDef, ObjectIdentifierTypeDef, PutObjectRequestTypeDef
 
 logger = get_logger(__name__)
+
+# concurrent reads when gathering an athlete's tracks
+READ_CONCURRENCY = 16
+# HTTP connections kept to the bucket: the track reads, plus the worker threads other calls run in
+MAX_CONNECTIONS = 32
+
+
+class InvalidRangeError(ValueError):
+    """A ranged read asked for bytes outside the object."""
 
 
 @frozen
@@ -37,10 +53,12 @@ class ArchiveKeys:
     Attributes:
         activity: intervals.icu's activity JSON, gzipped.
         streams: intervals.icu's streams JSON (every type the activity has), gzipped.
+        track: The simplified track, a GeoJSON feature, gzipped (only for activities with positions).
     """
 
     activity: str
     streams: str
+    track: str
 
 
 def athlete_prefix(athlete_id: str) -> str:
@@ -51,7 +69,33 @@ def athlete_prefix(athlete_id: str) -> str:
 def archive_keys(athlete_id: str, activity_id: str) -> ArchiveKeys:
     """The keys an activity is archived under."""
     prefix = f"{athlete_prefix(athlete_id)}activities/{activity_id}/"
-    return ArchiveKeys(activity=f"{prefix}activity.json.gz", streams=f"{prefix}streams.json.gz")
+    return ArchiveKeys(
+        activity=f"{prefix}activity.json.gz", streams=f"{prefix}streams.json.gz", track=f"{prefix}track.geojson.gz"
+    )
+
+
+def tracks_key(athlete_id: str) -> str:
+    """The athlete's map tiles (PMTiles)."""
+    return f"{athlete_prefix(athlete_id)}tracks.pmtiles"
+
+
+def _activity_file_pattern(athlete_id: str, name: str) -> re.Pattern[str]:
+    return re.compile(rf"^{re.escape(athlete_prefix(athlete_id))}activities/([^/]+)/{re.escape(name)}$")
+
+
+@frozen
+class RangedObject:
+    """Part (or all) of an object.
+
+    Attributes:
+        body: The bytes read.
+        etag: The object's ETag (changes whenever it's rewritten).
+        content_range: `bytes start-end/size` for a ranged read; None for the whole object.
+    """
+
+    body: bytes
+    etag: str
+    content_range: str | None
 
 
 def legacy_prefix(athlete_id: str) -> str:
@@ -82,6 +126,7 @@ class BlobStore:
             region_name="auto",
             aws_access_key_id=config.access_key_id,
             aws_secret_access_key=config.secret_access_key,
+            config=BotoConfig(max_pool_connections=MAX_CONNECTIONS),
         )
         return cls(s3=s3, bucket=config.bucket_name)
 
@@ -93,15 +138,40 @@ class BlobStore:
         await asyncio.to_thread(lambda: self.s3.put_object(**request))
         logger.debug("wrote blob", extra={"bucket": self.bucket, "key": key, "bytes": len(data)})
 
-    async def get(self, key: str) -> bytes | None:
-        """Read an object; None if there's none at `key`."""
+    def _read(self, key: str) -> bytes | None:
+        """Read an object (blocking); None if there's none at `key`."""
         try:
-            response = await asyncio.to_thread(self.s3.get_object, Bucket=self.bucket, Key=key)
+            response = self.s3.get_object(Bucket=self.bucket, Key=key)
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") == "NoSuchKey":
                 return None
             raise
-        return await asyncio.to_thread(response["Body"].read)
+        return response["Body"].read()
+
+    async def get(self, key: str) -> bytes | None:
+        """Read an object; None if there's none at `key`."""
+        return await asyncio.to_thread(self._read, key)
+
+    async def get_range(self, key: str, range_header: str | None) -> RangedObject | None:
+        """Read an object, or the bytes an HTTP `Range` header asks for; None if there's none at `key`.
+
+        Raises:
+            InvalidRangeError: The range is outside the object.
+        """
+        request: GetObjectRequestTypeDef = {"Bucket": self.bucket, "Key": key}
+        if range_header:
+            request["Range"] = range_header
+        try:
+            response = await asyncio.to_thread(lambda: self.s3.get_object(**request))
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code == "NoSuchKey":
+                return None
+            if code == "InvalidRange":
+                raise InvalidRangeError(range_header) from e
+            raise
+        body = await asyncio.to_thread(response["Body"].read)
+        return RangedObject(body=body, etag=response["ETag"], content_range=response.get("ContentRange"))
 
     async def list_keys(self, prefix: str) -> list[str]:
         """Every key under `prefix`."""
@@ -144,11 +214,23 @@ class BlobStore:
         """
         activity = await intervals.get_activity_json(activity_id)
         streams = await intervals.get_streams_json(activity_id)
+        summary = loads(activity, ActivitySummary)
         keys = archive_keys(athlete_id, activity_id)
         await self.put(keys.activity, gzip.compress(activity), "application/json", "gzip")
+        await self.save_track(athlete_id, summary, loads(streams, list[Stream]))
+        # the streams go last: they mark the activity as archived in full (`archived_activity_ids`)
         await self.put(keys.streams, gzip.compress(streams), "application/json", "gzip")
         logger.info("archived activity", extra={"athlete_id": athlete_id, "activity_id": activity_id, "bucket": self.bucket})
-        return loads(activity, ActivitySummary)
+        return summary
+
+    async def save_track(self, athlete_id: str, activity: Activity | ActivitySummary, streams: list[Stream]) -> None:
+        """Write an activity's simplified track, or delete a stale one if it has no positions."""
+        key = archive_keys(athlete_id, activity.id).track
+        feature = await asyncio.to_thread(track_feature, activity, streams)
+        if feature is None:
+            await self.delete_keys([key])
+        else:
+            await self.put(key, gzip.compress(encode_feature(feature)), "application/geo+json", "gzip")
 
     async def read_activity(self, athlete_id: str, activity_id: str) -> tuple[Activity, list[Stream]] | None:
         """An archived activity's details and streams; None if it isn't archived."""
@@ -160,14 +242,34 @@ class BlobStore:
 
     async def archived_activity_ids(self, athlete_id: str) -> set[str]:
         """Activities archived in full (their streams are written last)."""
-        pattern = re.compile(rf"^{re.escape(athlete_prefix(athlete_id))}activities/([^/]+)/streams\.json\.gz$")
+        return await self._activity_ids_with(athlete_id, "streams.json.gz")
+
+    async def track_activity_ids(self, athlete_id: str) -> set[str]:
+        """Activities with a track."""
+        return await self._activity_ids_with(athlete_id, "track.geojson.gz")
+
+    async def _activity_ids_with(self, athlete_id: str, name: str) -> set[str]:
+        pattern = _activity_file_pattern(athlete_id, name)
         keys = await self.list_keys(f"{athlete_prefix(athlete_id)}activities/")
         return {match[1] for key in keys if (match := pattern.match(key))}
+
+    async def read_track_features(self, athlete_id: str, activity_ids: list[str]) -> list[bytes]:
+        """Activities' tracks, each a GeoJSON feature on one line (missing ones are left out)."""
+
+        def read(activity_id: str) -> bytes | None:
+            data = self._read(archive_keys(athlete_id, activity_id).track)
+            return None if data is None else gzip.decompress(data)
+
+        def read_all() -> list[bytes]:
+            with ThreadPoolExecutor(READ_CONCURRENCY) as pool:
+                return [feature for feature in pool.map(read, activity_ids) if feature is not None]
+
+        return await asyncio.to_thread(read_all)
 
     async def delete_activity(self, athlete_id: str, activity_id: str) -> None:
         """Delete an archived activity."""
         keys = archive_keys(athlete_id, activity_id)
-        await self.delete_keys([keys.activity, keys.streams])
+        await self.delete_keys([keys.activity, keys.streams, keys.track])
 
     async def delete_athlete(self, athlete_id: str) -> int:
         """Delete everything archived for an athlete, in both layouts; returns how many objects were deleted."""

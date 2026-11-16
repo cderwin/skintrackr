@@ -1,4 +1,4 @@
-"""Authenticated activity API: GPX export, archiving, bulk imports, and vert stats."""
+"""Authenticated activity API: GPX export, archiving, bulk imports, vert stats, and the map's activities and tracks."""
 
 import re
 from datetime import UTC, date, datetime
@@ -6,15 +6,17 @@ from typing import Any
 
 from litestar import Request, Response, get, post
 from litestar.datastructures import State
-from litestar.exceptions import ClientException
+from litestar.exceptions import ClientException, HTTPException, NotFoundException
 from litestar.params import FromPath, FromQuery
 
+from skintrackr.clients.blob_store import InvalidRangeError, tracks_key
 from skintrackr.clients.intervals import activity_gpx, merge_streams
 from skintrackr.models import converter
 from skintrackr.server.auth import authenticate_request
 from skintrackr.server.errors import fail_with
 from skintrackr.server.ingest import ingest_activity, start_import
 from skintrackr.server.services import get_services
+from skintrackr.tracks import PMTILES_MEDIA_TYPE, map_track_ids
 from skintrackr.vert import year_to_date
 
 GPX_MEDIA_TYPE = "application/gpx+xml"
@@ -111,4 +113,48 @@ async def vert_stats(request: Request, state: State, today: FromQuery[date | Non
     return converter.unstructure(year_to_date(activities, as_of))
 
 
-api_handlers = [export_track, persist_activity, import_start, import_status, vert_stats]
+@get("/api/activities")
+async def list_activities(request: Request, state: State) -> dict[str, Any]:
+    """The athlete's activity index (in no particular order) and which of them are on the map, for its popups
+    and filters: `{"activities", "on_map": [id, ...] (newest first), "map_tracks_omitted"}`."""
+    services = get_services(state)
+    info = await authenticate_request(request, services)
+    with fail_with("failed to load activities", athlete_id=info.athlete_id):
+        activities = await services.store.activities(info.athlete_id)
+        tracks = map_track_ids(activities, await services.blob_store.track_activity_ids(info.athlete_id))
+    return {
+        "activities": converter.unstructure(activities),
+        "on_map": tracks.included,
+        "map_tracks_omitted": tracks.omitted,
+    }
+
+
+@get("/api/tracks.pmtiles")
+async def map_tracks(request: Request, state: State) -> Response[bytes]:
+    """The athlete's map tracks (PMTiles), whole or the byte range the `Range` header asks for.
+
+    404 until the athlete has a track. The ETag changes with every rebuild, which the map's PMTiles client
+    watches for.
+    """
+    services = get_services(state)
+    info = await authenticate_request(request, services)
+    with fail_with("failed to read map tracks", athlete_id=info.athlete_id):
+        try:
+            tracks = await services.blob_store.get_range(tracks_key(info.athlete_id), request.headers.get("range"))
+        except InvalidRangeError as e:
+            raise HTTPException(status_code=416, detail="range not satisfiable") from e
+    if tracks is None:
+        raise NotFoundException("no map tracks yet")
+    # private, no-cache: browsers revalidate, and never share one athlete's tracks with another
+    headers = {"Accept-Ranges": "bytes", "ETag": tracks.etag, "Cache-Control": "private, no-cache"}
+    if tracks.content_range:
+        headers["Content-Range"] = tracks.content_range
+    return Response(
+        tracks.body,
+        media_type=PMTILES_MEDIA_TYPE,
+        status_code=206 if tracks.content_range else 200,
+        headers=headers,
+    )
+
+
+api_handlers = [export_track, persist_activity, import_start, import_status, vert_stats, list_activities, map_tracks]

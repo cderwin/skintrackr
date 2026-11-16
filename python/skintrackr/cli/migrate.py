@@ -14,6 +14,10 @@ from skintrackr.clients.blob_store import BlobStore, legacy_prefix
 from skintrackr.clients.store import Store
 from skintrackr.config import BlobStorageConfig, Config
 from skintrackr.logging import configure_logging
+from skintrackr.server.ingest import build_tracks
+
+# activities whose tracks are written at once by `build-tracks`
+TRACK_CONCURRENCY = 8
 
 
 @click.group()
@@ -90,3 +94,37 @@ def intervals_reset(yes: bool) -> None:
     deleted_objects = asyncio.run(blob_store.delete_prefix(""))
     deleted_keys = _with_store(config, lambda store: store.delete_everything())
     click.echo(f"deleted {deleted_objects} objects and {deleted_keys} keys")
+
+
+async def _write_tracks(blob_store: BlobStore, athlete_id: str) -> int:
+    """Write the track of every activity archived for an athlete, from its streams; returns how many were read."""
+    activity_ids = await blob_store.archived_activity_ids(athlete_id)
+    limit = asyncio.Semaphore(TRACK_CONCURRENCY)
+
+    async def write(activity_id: str) -> None:
+        async with limit:
+            archived = await blob_store.read_activity(athlete_id, activity_id)
+            if archived is not None:
+                await blob_store.save_track(athlete_id, *archived)
+
+    await asyncio.gather(*(write(activity_id) for activity_id in activity_ids))
+    return len(activity_ids)
+
+
+@migrate.command("build-tracks")
+@click.option("--athlete", "athlete_ids", multiple=True, help="Only this athlete (repeatable; default: every connected one).")
+def build_tracks_command(athlete_ids: tuple[str, ...]) -> None:
+    """Write `track.geojson.gz` for every archived activity, then build each athlete's map tracks.
+
+    Written for the activity map (2026-11): tracks are derived from the archived streams, which were archived
+    before tracks existed. Rewrites every track and archive, so it's safe to re-run (e.g. after changing how
+    tracks are simplified).
+    """
+    config = Config.from_env()
+    blob_store = BlobStore.build(config.blob_storage)
+    athletes = list(athlete_ids) or _with_store(config, lambda store: store.connected_athletes())
+    for athlete_id in athletes:
+        activities = asyncio.run(_write_tracks(blob_store, athlete_id))
+        tracks = _with_store(config, lambda store: build_tracks(store, blob_store, athlete_id))
+        omitted = f", {tracks.omitted} older ones left off the map" if tracks.omitted else ""
+        click.echo(f"{athlete_id}: {activities} archived activities, {len(tracks.included)} tracks on the map{omitted}")

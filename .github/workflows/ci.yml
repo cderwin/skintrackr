@@ -25,6 +25,23 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      # tippecanoe builds the map's tiles; the tests run it. Same version as the Dockerfile, built once and cached.
+      - name: tippecanoe version
+        id: tippecanoe
+        run: echo "version=$(sed -n 's/^ARG TIPPECANOE_VERSION=//p' Dockerfile)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: tippecanoe-cache
+        with:
+          path: ~/.local/bin/tippecanoe
+          key: tippecanoe-${{ steps.tippecanoe.outputs.version }}-${{ runner.os }}
+      - name: Build tippecanoe
+        if: steps.tippecanoe-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libsqlite3-dev zlib1g-dev
+          git clone --depth 1 --branch "${{ steps.tippecanoe.outputs.version }}" https://github.com/felt/tippecanoe.git "$RUNNER_TEMP/tippecanoe"
+          make -C "$RUNNER_TEMP/tippecanoe" -j"$(nproc)" tippecanoe
+          install -D "$RUNNER_TEMP/tippecanoe/tippecanoe" ~/.local/bin/tippecanoe
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # Python version comes from python/.python-version; --locked fails if uv.lock is stale.
       - run: uv sync --locked
         working-directory: python

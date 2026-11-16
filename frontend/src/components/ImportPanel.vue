@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Bulk import (Re-sync) of the athlete's intervals.icu activities: start it, and follow its progress while it runs.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, SYNC_WINDOW_DAYS, type ImportStatus } from '@/api'
+import { api, MAP_TRACKS_LIMIT, SYNC_WINDOW_DAYS, type ImportStatus } from '@/api'
+import { settings } from '@/settings'
 
 const POLL_MS = 3000
 
@@ -22,6 +23,16 @@ async function refresh(request = api.importStatus): Promise<void> {
 
 onMounted(() => refresh())
 onBeforeUnmount(() => clearTimeout(timer))
+
+// after a finished import over the map's limit, until dismissed (it comes back if more are left off)
+const mapLimitWarning = computed(() => {
+  const s = status.value
+  return s?.state === 'done' && s.map_tracks_omitted > settings.mapLimitDismissed ? s.map_tracks_omitted : 0
+})
+
+function dismissMapLimit(): void {
+  settings.mapLimitDismissed = status.value?.map_tracks_omitted ?? 0
+}
 
 const progress = computed(() => {
   const s = status.value
@@ -70,6 +81,14 @@ const summary = computed(() => {
       New activities and edits from the last {{ SYNC_WINDOW_DAYS }} days sync automatically. Re-sync to pick up
       changes to anything older.
     </small>
+    <div v-if="mapLimitWarning" class="warning" role="alert">
+      <p>
+        Your map shows your {{ MAP_TRACKS_LIMIT.toLocaleString() }} most recent activities.
+        {{ mapLimitWarning.toLocaleString() }} older {{ mapLimitWarning === 1 ? 'activity is' : 'activities are' }}
+        still synced and count in your stats, but {{ mapLimitWarning === 1 ? "isn't" : "aren't" }} drawn on the map.
+      </p>
+      <button type="button" class="dismiss" aria-label="Dismiss" @click="dismissMapLimit">✕</button>
+    </div>
     <small v-if="error" class="failed">{{ error }}</small>
   </section>
 </template>
@@ -99,6 +118,33 @@ small {
 
 .failed {
   color: #b91c1c;
+}
+
+.warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #fcd34d;
+  border-radius: 10px;
+  background: #fffbeb;
+  color: #92400e;
+  text-align: left;
+  line-height: 1.45;
+}
+
+.warning p {
+  margin: 0;
+}
+
+.dismiss {
+  flex: none;
+  padding: 0 2px;
+  border: none;
+  background: none;
+  color: #92400e;
+  font-size: 14px;
+  cursor: pointer;
 }
 
 .bar {

@@ -21,14 +21,15 @@ Paths below are relative to `python/`.
 5. **skintrackr/clients/blob_store.py** - ALL blob-storage (S3-compatible) operations via `BlobStore`, and the archive layout; `archive_activity` downloads an activity and its streams from intervals.icu and uploads them gzipped
 6. **skintrackr/server/connect.py** - `/auth/connect` (API key form), `/auth/logout`, `/auth/disconnect`; `connect_athlete()` is shared with `/token/new`
 7. **skintrackr/server/ingest.py** - Ingesting activities into the bucket and the Redis index: `ingest_activity`, bulk imports (`start_import`, resumed at startup), the periodic sync (`run_sync_loop`/`sync_athlete`; it stands in for webhooks, which intervals.icu only sends to registered OAuth apps), `remove_activity`/`remove_athlete`
-8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`)
+8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`, and the map's `list_activities`/`map_tracks`)
 9. **skintrackr/server/token_api.py** - API token issue/verify/revoke handlers; **server/auth.py** has `authenticate_request`
 10. **skintrackr/crypto.py** - JWT signing/verification and NaCl secretbox encryption
 11. **skintrackr/config.py** - Environment configuration (`Config`, `BlobStorageConfig`)
 12. **skintrackr/server/errors.py** - `{"message": ...}` error responses and `fail_with()`
 13. **skintrackr/models.py**, **gpx.py**, **logging.py** - attrs types + cattrs converter, GPX generation, JSON-lines logging
 14. **skintrackr/vert.py** - `year_to_date()`: year-to-date vert from an athlete's activity index
-15. **skintrackr/cli/** - click commands: `serve`, and `migrate <name>` (one-off data migrations, kept after they've run)
+15. **skintrackr/tracks.py** - map tracks: `track_feature()` (simplified GeoJSON per activity), `map_track_ids()` (the `MAP_TRACKS_LIMIT` = 3,000 most recent), `build_pmtiles()` (runs tippecanoe); rebuilds are scheduled by `schedule_tracks` in `server/ingest.py`
+16. **skintrackr/cli/** - click commands: `serve`, and `migrate <name>` (one-off data migrations, kept after they've run)
 
 ### Architecture Rules
 
@@ -81,6 +82,9 @@ Activities are stored in full in the bucket (source of truth) and as summaries i
 days) and bulk imports (`server/ingest.py`) write both, in background tasks (`services.spawn`) that are paced and
 wait out intervals.icu's rate limits (`RateLimiter` in `intervals.py`; use `IntervalsClient.in_background()` for
 background work). Activities intervals.icu lists but doesn't serve (synced to it from Strava) are skipped.
+Each archived activity also gets a simplified `track.geojson.gz`, and each athlete a `tracks.pmtiles` of their
+3,000 most recent tracks, rebuilt in the background after changes (tippecanoe: `brew install tippecanoe` locally;
+the Dockerfile and CI build it).
 
 ## Git Workflow & Best Practices
 
@@ -231,8 +235,8 @@ just web-typecheck   # vue-tsc (part of `just check`)
 - Server routes (`/auth/...`, `/token/...`, `/api/...`) are plain links or `fetch` calls, not router links; add any new top-level server prefix to the proxy list in `vite.config.ts`
 - The `/connect` page posts the API key to `/auth/connect` (`api.connect`), which signs the browser in (session cookie), then routes to `/connected`; `SYNC_WINDOW_DAYS` in `src/api.ts` mirrors the server's default
 - Call the server through `src/api.ts` (it sends the cookie; 401/403 become `SignedOutError`); `useSignedIn()` tells whether the browser is signed in
-- Per-browser preferences (vert goal, units) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()`
-- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`)
+- Per-browser preferences (vert goal, units, map filters) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()` and distances with `formatDistance()`
+- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`). The map draws the athlete's tracks from `/api/tracks.pmtiles` (the `pmtiles` protocol), colored by sport (`src/sports.ts`); clicking opens `ActivityPopup`, and `MapFilters` narrows by sport and calendar year (`src/mapFilters.ts` holds the shared filter logic). `MAP_TRACKS_LIMIT` in `src/api.ts` mirrors the server's
 - Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines
@@ -287,7 +291,7 @@ When a new feature would otherwise duplicate existing behavior, refactor the sha
    - Include relevant context (athlete_id, activity_id, etc.)
    - Log errors before returning or raising them (`fail_with` does this for handlers)
 
-6. **Stored formats are frozen** - Redis keys (including `athlete:{id}:intervals-key`/`:activities`/`:import`), ciphertext layout, JWT claims (`athlete_id` is the intervals.icu id, a string) and the bucket layout (`athletes/{id}/activities/{id}/activity.json.gz` and `streams.json.gz`, intervals.icu's JSON as received) must stay compatible with existing data; a change ships with a `skintrackr migrate` subcommand in `cli/migrate.py`, and migrations stay there after they've run
+6. **Stored formats are frozen** - Redis keys (including `athlete:{id}:intervals-key`/`:activities`/`:import`), ciphertext layout, JWT claims (`athlete_id` is the intervals.icu id, a string) and the bucket layout (`athletes/{id}/activities/{id}/activity.json.gz` and `streams.json.gz`, intervals.icu's JSON as received; the derived `track.geojson.gz` and `athletes/{id}/tracks.pmtiles`) must stay compatible with existing data; a change ships with a `skintrackr migrate` subcommand in `cli/migrate.py`, and migrations stay there after they've run
 
 ## Common Tasks
 

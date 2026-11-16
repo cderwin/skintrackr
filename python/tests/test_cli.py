@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 from click.testing import CliRunner, Result
@@ -6,8 +7,9 @@ from fakeredis import FakeServer
 
 from skintrackr.cli import migrate as migrate_module
 from skintrackr.cli.main import main
-from skintrackr.clients.blob_store import archive_keys
-from tests.conftest import ATHLETE_ID, SECRET, FakeBucket, connect, fake_redis, with_store
+from skintrackr.clients.blob_store import archive_keys, tracks_key
+from skintrackr.models import ActivitySummary
+from tests.conftest import ACTIVITY, ATHLETE_ID, SECRET, STREAMS, FakeBucket, connect, fake_redis, with_store
 
 LEGACY_ATHLETE = "4242"
 
@@ -17,7 +19,7 @@ def test_help_lists_commands() -> None:
     assert result.exit_code == 0
     assert all(name in result.output for name in ("serve", "migrate"))
     migrations = CliRunner().invoke(main, ["migrate", "--help"])
-    assert all(name in migrations.output for name in ("legacy-layout", "intervals-reset"))
+    assert all(name in migrations.output for name in ("legacy-layout", "intervals-reset", "build-tracks"))
 
 
 @pytest.fixture
@@ -111,3 +113,36 @@ def test_intervals_reset_requires_settings(env_bucket: FakeBucket, monkeypatch: 
     result = reset(None, "--yes")
     assert result.exit_code == 1
     assert "APP_SECRET must be set" in str(result.exception)
+
+
+# --- migrate build-tracks
+
+
+def archive_activity(bucket: FakeBucket, activity_id: str, streams: list[dict[str, Any]]) -> None:
+    """An activity archived before tracks existed: its JSON and streams, no track."""
+    keys = archive_keys(ATHLETE_ID, activity_id)
+    bucket.put_json(keys.activity, {**ACTIVITY, "id": activity_id})
+    bucket.put_json(keys.streams, streams)
+
+
+def test_build_tracks_backfills_tracks_and_builds_the_map(
+    reset_env: FakeBucket, redis_server: FakeServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fake_build(features: list[bytes]) -> bytes:
+        return b"PMTiles %d" % len(features)
+
+    monkeypatch.setattr("skintrackr.server.ingest.build_pmtiles", fake_build)
+    connect(redis_server)
+    archive_activity(reset_env, "i1", STREAMS)
+    archive_activity(reset_env, "i2", [s for s in STREAMS if s["type"] != "latlng"])  # indoor
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, [ActivitySummary(id="i1"), ActivitySummary(id="i2")]))
+
+    for _ in range(2):  # safe to re-run
+        result = CliRunner().invoke(main, ["migrate", "build-tracks"])
+        assert result.exit_code == 0, result.output
+        assert f"{ATHLETE_ID}: 2 archived activities, 1 tracks on the map" in result.output
+
+    assert archive_keys(ATHLETE_ID, "i1").track in reset_env.keys()
+    assert archive_keys(ATHLETE_ID, "i2").track not in reset_env.keys()
+    assert reset_env.json(archive_keys(ATHLETE_ID, "i1").track)["properties"]["id"] == "i1"
+    assert reset_env.read(tracks_key(ATHLETE_ID)) == b"PMTiles 1"

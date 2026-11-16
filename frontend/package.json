@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "maplibre-gl": "^6.18.0",
+    "pmtiles": "^4.5.0",
     "vue": "^3.5.45",
     "vue-router": "^5.5.1"
   },

@@ -26,6 +26,7 @@ class Services:
         intervals: intervals.icu client without an API key; `intervals_for` derives per-athlete clients.
         blob_store: Activity archive.
         background: Tasks running after their request was answered; held so they aren't garbage collected.
+        pending_tracks: Athletes whose map tracks need a rebuild (see `ingest.schedule_tracks`).
     """
 
     config: Config
@@ -33,6 +34,7 @@ class Services:
     intervals: IntervalsClient
     blob_store: BlobStore
     background: set[asyncio.Task[None]] = field(factory=set)
+    pending_tracks: set[str] = field(factory=set)
 
     async def intervals_for(self, athlete_id: str) -> IntervalsClient:
         """An intervals.icu client acting for an athlete, with their API key.

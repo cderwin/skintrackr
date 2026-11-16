@@ -184,6 +184,7 @@ def config() -> Config:
         redis_url="redis://unused",
         secret=SECRET,
         background_spacing=0,
+        tracks_debounce=timedelta(0),
     )
 
 
@@ -193,7 +194,10 @@ def intervals() -> FakeIntervals:
 
 
 @pytest.fixture
-def bucket() -> Iterator[FakeBucket]:
+def bucket(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeBucket]:
+    # boto3 honours endpoint overrides from the environment, which would send these requests past moto
+    for name in ("AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3"):
+        monkeypatch.delenv(name, raising=False)
     with mock_aws():
         yield FakeBucket()
 
