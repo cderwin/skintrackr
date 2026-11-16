@@ -12,6 +12,15 @@ ARG VITE_MAPTILER_KEY=""
 RUN VITE_MAPTILER_KEY="$VITE_MAPTILER_KEY" npm run build
 
 
+# --- tippecanoe: builds the map's vector tiles. CI builds the same version (it reads it from here).
+FROM debian:bookworm-slim AS tippecanoe
+ARG TIPPECANOE_VERSION=2.79.0
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential ca-certificates git libsqlite3-dev zlib1g-dev \
+ && git clone --depth 1 --branch "$TIPPECANOE_VERSION" https://github.com/felt/tippecanoe.git /src \
+ && make -C /src -j"$(nproc)" tippecanoe
+
+
 # --- python: locked dependencies + the project in /app/python/.venv
 FROM ghcr.io/astral-sh/uv:0.8.22-python3.12-bookworm-slim AS python
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=0
@@ -29,6 +38,7 @@ FROM python:3.12-slim-bookworm
 WORKDIR /app
 COPY --from=python /app/python/.venv /app/python/.venv
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
+COPY --from=tippecanoe /src/tippecanoe /usr/local/bin/tippecanoe
 ENV PATH=/app/python/.venv/bin:$PATH \
     SKINTRACKR_FRONTEND_DIR=/app/frontend/dist \
     PYTHONUNBUFFERED=1

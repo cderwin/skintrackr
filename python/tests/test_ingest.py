@@ -1,14 +1,28 @@
 import asyncio
+import functools
+import json
+import logging
 from datetime import date
 from typing import Any
 
 import pytest
 from fakeredis import FakeServer
 
-from skintrackr.clients.blob_store import archive_keys
+from skintrackr.clients.blob_store import archive_keys, tracks_key
 from skintrackr.config import Config
-from skintrackr.models import ActivitySummary, ImportStatus
-from skintrackr.server.ingest import RECONNECT_MESSAGE, resume_imports, run_import, start_import, sync_all, sync_athlete
+from skintrackr.models import ActivitySummary, ImportStatus, loads
+from skintrackr.server.ingest import (
+    RECONNECT_MESSAGE,
+    build_tracks,
+    remove_athlete,
+    resume_imports,
+    run_import,
+    schedule_tracks,
+    start_import,
+    sync_all,
+    sync_athlete,
+)
+from skintrackr.tracks import TrackBuildError, map_track_ids
 from tests.conftest import (
     ACTIVITY,
     ATHLETE_ID,
@@ -191,3 +205,155 @@ def test_sync_all_carries_on_after_errors(
     intervals.add_activities([])
     asyncio.run(sync_all(make_services(config, intervals, bucket, redis_server)))
     assert [r.url.path for r in intervals.requests] == ["/api/v1/athlete/i1/activities", f"/api/v1/athlete/{ATHLETE_ID}/activities"]
+
+
+# --- map tracks
+
+
+class FakeTiles:
+    """Stands in for tippecanoe: records each build's features, and returns a fake archive."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.builds: list[list[str]] = []
+        self.error: Exception | None = None
+        monkeypatch.setattr("skintrackr.server.ingest.build_pmtiles", self.build)
+
+    async def build(self, features: list[bytes]) -> bytes:
+        self.builds.append([json.loads(feature)["properties"]["id"] for feature in features])
+        if self.error:
+            raise self.error
+        return b"PMTiles fake"
+
+
+@pytest.fixture
+def tiles(monkeypatch: pytest.MonkeyPatch) -> FakeTiles:
+    return FakeTiles(monkeypatch)
+
+
+def limit_map_tracks(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
+    monkeypatch.setattr("skintrackr.server.ingest.map_track_ids", functools.partial(map_track_ids, limit=limit))
+
+
+def seed_tracks(bucket: FakeBucket, redis_server: FakeServer, days: dict[str, str]) -> None:
+    """Index activities (id -> local start day) and give each a track."""
+    index = [ActivitySummary(id=a, start_date_local=f"{day}T09:00:00") for a, day in days.items()]
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, index))
+    for activity_id in days:
+        bucket.put_json(archive_keys(ATHLETE_ID, activity_id).track, {"type": "Feature", "properties": {"id": activity_id}})
+
+
+def test_build_tracks_from_the_most_recent_and_warns_when_limited(
+    config: Config,
+    intervals: FakeIntervals,
+    bucket: FakeBucket,
+    redis_server: FakeServer,
+    tiles: FakeTiles,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seed_tracks(bucket, redis_server, {"i1": "2024-03-01", "i2": "2026-01-05", "i3": "2025-07-04"})
+    limit_map_tracks(monkeypatch, 2)
+    services = make_services(config, intervals, bucket, redis_server)
+
+    with caplog.at_level(logging.WARNING, logger="skintrackr.server.ingest"):
+        tracks = asyncio.run(build_tracks(services.store, services.blob_store, ATHLETE_ID))
+
+    assert (tracks.included, tracks.omitted) == (["i2", "i3"], 1)
+    assert tiles.builds == [["i2", "i3"]]
+    assert bucket.read(tracks_key(ATHLETE_ID)) == b"PMTiles fake"
+    head = bucket.s3.head_object(Bucket=bucket.NAME, Key=tracks_key(ATHLETE_ID))
+    assert head["ContentType"] == "application/vnd.pmtiles"
+    [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warning.getMessage() == "map tracks limited"
+    assert [getattr(warning, k) for k in ("athlete_id", "tracks", "included", "omitted")] == [ATHLETE_ID, 3, 2, 1]
+
+
+def test_build_tracks_under_the_limit_doesnt_warn(
+    config: Config,
+    intervals: FakeIntervals,
+    bucket: FakeBucket,
+    redis_server: FakeServer,
+    tiles: FakeTiles,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seed_tracks(bucket, redis_server, {"i1": "2024-03-01"})
+    services = make_services(config, intervals, bucket, redis_server)
+    with caplog.at_level(logging.WARNING, logger="skintrackr.server.ingest"):
+        asyncio.run(build_tracks(services.store, services.blob_store, ATHLETE_ID))
+    assert tiles.builds == [["i1"]]
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_build_tracks_without_tracks_deletes_the_archive(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer, tiles: FakeTiles
+) -> None:
+    bucket.put(tracks_key(ATHLETE_ID))  # every activity with a track was deleted since
+    services = make_services(config, intervals, bucket, redis_server)
+    asyncio.run(build_tracks(services.store, services.blob_store, ATHLETE_ID))
+    assert tiles.builds == []
+    assert tracks_key(ATHLETE_ID) not in bucket.keys()
+
+
+def test_scheduled_rebuilds_coalesce_and_survive_failures(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer, tiles: FakeTiles
+) -> None:
+    seed_tracks(bucket, redis_server, {"i1": "2024-03-01"})
+
+    async def run() -> int:
+        services = make_services(config, intervals, bucket, redis_server)
+        tiles.error = TrackBuildError("boom")
+        for _ in range(3):  # changes before the rebuild starts: one rebuild
+            schedule_tracks(services, ATHLETE_ID)
+        await asyncio.gather(*services.background)
+        tiles.error = None
+        schedule_tracks(services, ATHLETE_ID)  # a later change still rebuilds
+        await asyncio.gather(*services.background)
+        return len(services.background)
+
+    assert asyncio.run(run()) == 0
+    assert tiles.builds == [["i1"], ["i1"]]
+    assert tracks_key(ATHLETE_ID) in bucket.keys()
+
+
+def test_remove_athlete_cancels_pending_rebuilds(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer, tiles: FakeTiles
+) -> None:
+    async def run() -> None:
+        services = make_services(config, intervals, bucket, redis_server)
+        schedule_tracks(services, ATHLETE_ID)
+        await remove_athlete(services, ATHLETE_ID)
+        await asyncio.gather(*services.background, return_exceptions=True)
+        assert ATHLETE_ID not in services.pending_tracks
+
+    asyncio.run(run())
+    assert tiles.builds == []
+
+
+@pytest.mark.usefixtures("connected")
+def test_import_over_the_map_limit_records_omitted_tracks(
+    config: Config,
+    intervals: FakeIntervals,
+    bucket: FakeBucket,
+    redis_server: FakeServer,
+    tiles: FakeTiles,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activities = [activity("i1", "2025-01-01"), activity("i2", "2026-01-01")]
+    intervals.add_activities(activities)
+    for item in activities:
+        intervals.add_activity(item)
+    limit_map_tracks(monkeypatch, 1)
+
+    async def run() -> None:
+        services = make_services(config, intervals, bucket, redis_server)
+        await run_import(services, ATHLETE_ID)
+        await asyncio.gather(*services.background)
+
+    asyncio.run(run())
+    assert import_status(redis_server).map_tracks_omitted == 1
+    assert tiles.builds[-1] == ["i2"]
+
+
+def test_import_status_from_before_the_map_limit() -> None:
+    status = loads('{"state": "done", "activities": 3, "updated_at": 1}', ImportStatus)
+    assert (status.state, status.map_tracks_omitted) == ("done", 0)

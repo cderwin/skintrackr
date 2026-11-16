@@ -184,6 +184,7 @@ def config() -> Config:
         redis_url="redis://unused",
         secret=SECRET,
         background_spacing=0,
+        tracks_debounce=timedelta(0),
     )
 
 

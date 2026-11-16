@@ -146,7 +146,11 @@ async def build_pmtiles(features: list[bytes]) -> bytes:
             )
         except FileNotFoundError as e:
             raise TrackBuildError(f"{TIPPECANOE} isn't installed (see python/README.md)") from e
-        _, stderr = await process.communicate()
+        try:
+            _, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            process.kill()
+            raise
         if process.returncode != 0:
             raise TrackBuildError(f"{TIPPECANOE} exited with {process.returncode}: {stderr.decode(errors='replace')[-500:]}")
         return await asyncio.to_thread(archive.read_bytes)

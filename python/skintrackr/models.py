@@ -83,6 +83,8 @@ class ImportStatus:
         tracks_done: Activities archived in full (details and streams) so far.
         tracks_total: Activities to archive in full.
         skipped: Activities intervals.icu lists but doesn't serve through its API (synced from Strava).
+        map_tracks_omitted: Activities with a track left off the map when the import finished, beyond the
+            `tracks.MAP_TRACKS_LIMIT` most recent.
         error: Why it failed, if it did.
         updated_at: Unix time of the last change.
     """
@@ -92,6 +94,7 @@ class ImportStatus:
     tracks_done: int = 0
     tracks_total: int = 0
     skipped: int = 0
+    map_tracks_omitted: int = 0
     error: str = ""
     updated_at: int = 0
 

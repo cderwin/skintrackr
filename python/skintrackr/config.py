@@ -14,6 +14,8 @@ DEFAULT_BUCKET_NAME = "skintrackr-storage"
 DEFAULT_S3_ENDPOINT = "https://t3.storage.dev"
 DEFAULT_SYNC_INTERVAL = timedelta(minutes=15)
 DEFAULT_SYNC_WINDOW = timedelta(days=30)
+# a rebuild costs ~7.4 ms of CPU per track (docs/benchmarks/tippecanoe-rebuild)
+DEFAULT_TRACKS_DEBOUNCE = timedelta(seconds=60)
 
 
 class ConfigError(Exception):
@@ -82,6 +84,7 @@ class Config:
         background_spacing: Minimum seconds between background intervals.icu requests.
         sync_interval: How often connected athletes' recent activities are synced (`SYNC_INTERVAL_MINUTES`).
         sync_window: How far back each sync looks, by start date (`SYNC_WINDOW_DAYS`).
+        tracks_debounce: Minimum time between rebuilds of an athlete's map tracks.
         debug_responses: Save every intervals.icu response body to the working directory
             (`DEBUG_INTERVALS_RESPONSE_BODY`).
     """
@@ -93,6 +96,7 @@ class Config:
     background_spacing: float = BACKGROUND_SPACING
     sync_interval: timedelta = DEFAULT_SYNC_INTERVAL
     sync_window: timedelta = DEFAULT_SYNC_WINDOW
+    tracks_debounce: timedelta = DEFAULT_TRACKS_DEBOUNCE
     debug_responses: bool = False
 
     @classmethod

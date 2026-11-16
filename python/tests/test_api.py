@@ -1,3 +1,4 @@
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -5,7 +6,7 @@ import pytest
 from fakeredis import FakeServer
 from litestar.testing import TestClient
 
-from skintrackr.clients.blob_store import archive_keys
+from skintrackr.clients.blob_store import archive_keys, tracks_key
 from skintrackr.crypto import generate_jwt
 from skintrackr.models import ActivitySummary
 from tests.conftest import (
@@ -140,7 +141,8 @@ def test_persist(client: TestClient, intervals: FakeIntervals, bucket: FakeBucke
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "activityId": ACTIVITY_ID}
-    assert bucket.keys() == {KEYS.activity, KEYS.streams, KEYS.track}
+    wait_for_background(client)  # the map tracks rebuild
+    assert bucket.keys() - {tracks_key(ATHLETE_ID)} == {KEYS.activity, KEYS.streams, KEYS.track}
     assert [a.id for a in with_store(redis_server, lambda s: s.activities(ATHLETE_ID))] == [ACTIVITY_ID]
 
 
@@ -168,7 +170,10 @@ def test_import_runs_in_the_background(client: TestClient, intervals: FakeInterv
 
     status = client.get(IMPORT, headers=headers).json()
     assert (status["state"], status["activities"], status["tracks_done"], status["tracks_total"]) == ("done", 1, 1, 1)
-    assert bucket.keys() == {KEYS.activity, KEYS.streams, KEYS.track}
+    assert status["map_tracks_omitted"] == 0
+    assert bucket.keys() - {tracks_key(ATHLETE_ID)} == {KEYS.activity, KEYS.streams, KEYS.track}
+    if shutil.which("tippecanoe"):
+        assert bucket.read(tracks_key(ATHLETE_ID))[:7] == b"PMTiles"
 
 
 def test_import_status_before_any_import(client: TestClient, redis_server: FakeServer) -> None:

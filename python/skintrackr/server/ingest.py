@@ -8,6 +8,8 @@
 - `run_sync_loop`: every `sync_interval`, syncs each connected athlete's activities that started within the
   `sync_window`: new and changed ones are ingested, deleted ones removed. Older changes need a Re-sync.
 - `remove_activity` / `remove_athlete`: deleted activities, and disconnecting.
+- `schedule_tracks` / `build_tracks`: the athlete's map tracks (`tracks.pmtiles`), rebuilt in the background
+  after their activities change, at most every `tracks_debounce`, from the `MAP_TRACKS_LIMIT` most recent tracks.
 
 Activities intervals.icu lists but doesn't serve through its API (`UNAVAILABLE_SOURCES`, synced from Strava)
 are skipped.
@@ -16,10 +18,13 @@ are skipped.
 import asyncio
 from datetime import UTC, date, datetime
 
+from skintrackr.clients.blob_store import BlobStore, tracks_key
 from skintrackr.clients.intervals import UNAVAILABLE_SOURCES, IntervalsClient, IntervalsError
+from skintrackr.clients.store import Store
 from skintrackr.logging import get_logger
 from skintrackr.models import ActivitySummary
 from skintrackr.server.services import Services
+from skintrackr.tracks import PMTILES_MEDIA_TYPE, MapTracks, build_pmtiles, map_track_ids
 
 logger = get_logger(__name__)
 
@@ -31,6 +36,10 @@ RECONNECT_MESSAGE = "intervals.icu rejected the API key: reconnect to update it"
 
 def _import_task(athlete_id: str) -> str:
     return f"import-{athlete_id}"
+
+
+def _tracks_task(athlete_id: str) -> str:
+    return f"tracks-{athlete_id}"
 
 
 def _available(summaries: list[ActivitySummary]) -> list[ActivitySummary]:
@@ -48,6 +57,7 @@ async def ingest_activity(
     """
     summary = await services.blob_store.archive_activity(intervals, athlete_id, activity_id)
     await services.store.save_activities(athlete_id, [summary])
+    schedule_tracks(services, athlete_id)
     return summary
 
 
@@ -55,12 +65,15 @@ async def remove_activity(services: Services, athlete_id: str, activity_id: str)
     """Delete an activity from the bucket and the athlete's index."""
     await services.blob_store.delete_activity(athlete_id, activity_id)
     await services.store.delete_activity(athlete_id, activity_id)
+    schedule_tracks(services, athlete_id)
     logger.info("removed activity", extra={"athlete_id": athlete_id, "activity_id": activity_id})
 
 
 async def remove_athlete(services: Services, athlete_id: str) -> None:
     """Delete everything stored for an athlete: archive, index, import progress and API key."""
     services.cancel(_import_task(athlete_id))
+    services.cancel(_tracks_task(athlete_id))
+    services.pending_tracks.discard(athlete_id)
     deleted = await services.blob_store.delete_athlete(athlete_id)
     await services.store.delete_athlete(athlete_id)
     logger.info("removed athlete", extra={"athlete_id": athlete_id, "deleted_objects": deleted})
@@ -125,6 +138,8 @@ async def run_import(services: Services, athlete_id: str) -> None:
                 status.activities -= 1
                 status.tracks_total -= 1
             await store.save_import(athlete_id, status)
+        status.map_tracks_omitted = (await select_map_tracks(store, services.blob_store, athlete_id)).omitted
+        schedule_tracks(services, athlete_id)
         status.state = "done"
         logger.info("import finished", extra={**context, "activities": status.activities})
     except Exception as e:
@@ -132,6 +147,56 @@ async def run_import(services: Services, athlete_id: str) -> None:
         status.state = "failed"
         status.error = RECONNECT_MESSAGE if isinstance(e, IntervalsError) and e.unauthorized else str(e)
     await store.save_import(athlete_id, status)
+
+
+# --- map tracks
+
+
+async def select_map_tracks(store: Store, blob_store: BlobStore, athlete_id: str) -> MapTracks:
+    """The tracks an athlete's map holds: the most recent indexed activities with a track."""
+    return map_track_ids(await store.activities(athlete_id), await blob_store.track_activity_ids(athlete_id))
+
+
+async def build_tracks(store: Store, blob_store: BlobStore, athlete_id: str) -> MapTracks:
+    """Rebuild an athlete's map tracks (`tracks.pmtiles`), or delete them if they have no tracks.
+
+    Raises:
+        TrackBuildError: tippecanoe failed.
+        botocore.exceptions.ClientError: Reading the tracks or uploading the archive failed.
+    """
+    tracks = await select_map_tracks(store, blob_store, athlete_id)
+    context = {"athlete_id": athlete_id, "included": len(tracks.included)}
+    if tracks.omitted:
+        total = len(tracks.included) + tracks.omitted
+        logger.warning("map tracks limited", extra={**context, "tracks": total, "omitted": tracks.omitted})
+    if tracks.included:
+        features = await blob_store.read_track_features(athlete_id, tracks.included)
+        await blob_store.put(tracks_key(athlete_id), await build_pmtiles(features), PMTILES_MEDIA_TYPE)
+    else:
+        await blob_store.delete_keys([tracks_key(athlete_id)])
+    logger.info("built map tracks", extra=context)
+    return tracks
+
+
+def schedule_tracks(services: Services, athlete_id: str) -> None:
+    """Rebuild an athlete's map tracks in the background: now if no rebuild is running, else after it."""
+    services.pending_tracks.add(athlete_id)
+    if not services.is_running(_tracks_task(athlete_id)):
+        services.spawn(run_tracks(services, athlete_id), name=_tracks_task(athlete_id))
+
+
+async def run_tracks(services: Services, athlete_id: str) -> None:
+    """Rebuild an athlete's map tracks while rebuilds are pending, at most every `tracks_debounce`.
+
+    Failures are logged; the next change schedules another rebuild.
+    """
+    while athlete_id in services.pending_tracks:
+        services.pending_tracks.discard(athlete_id)
+        try:
+            await build_tracks(services.store, services.blob_store, athlete_id)
+        except Exception as e:
+            logger.error("map tracks build failed", exc_info=e, extra={"athlete_id": athlete_id})
+        await asyncio.sleep(services.config.tracks_debounce.total_seconds())
 
 
 # --- periodic sync
