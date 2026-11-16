@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Self
 
 import boto3
 from attrs import frozen
+from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from skintrackr.clients.intervals import IntervalsClient
@@ -37,6 +38,8 @@ logger = get_logger(__name__)
 
 # concurrent reads when gathering an athlete's tracks
 READ_CONCURRENCY = 16
+# HTTP connections kept to the bucket: the track reads, plus the worker threads other calls run in
+MAX_CONNECTIONS = 32
 
 
 class InvalidRangeError(ValueError):
@@ -123,6 +126,7 @@ class BlobStore:
             region_name="auto",
             aws_access_key_id=config.access_key_id,
             aws_secret_access_key=config.secret_access_key,
+            config=BotoConfig(max_pool_connections=MAX_CONNECTIONS),
         )
         return cls(s3=s3, bucket=config.bucket_name)
 
