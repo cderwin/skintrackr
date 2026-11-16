@@ -235,8 +235,8 @@ just web-typecheck   # vue-tsc (part of `just check`)
 - Server routes (`/auth/...`, `/token/...`, `/api/...`) are plain links or `fetch` calls, not router links; add any new top-level server prefix to the proxy list in `vite.config.ts`
 - The `/connect` page posts the API key to `/auth/connect` (`api.connect`), which signs the browser in (session cookie), then routes to `/connected`; `SYNC_WINDOW_DAYS` in `src/api.ts` mirrors the server's default
 - Call the server through `src/api.ts` (it sends the cookie; 401/403 become `SignedOutError`); `useSignedIn()` tells whether the browser is signed in
-- Per-browser preferences (vert goal, units) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()`
-- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`)
+- Per-browser preferences (vert goal, units, map filters) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()` and distances with `formatDistance()`
+- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`). The map draws the athlete's tracks from `/api/tracks.pmtiles` (the `pmtiles` protocol), colored by sport (`src/sports.ts`); clicking opens `ActivityPopup`, and `MapFilters` narrows by sport and calendar year (`src/mapFilters.ts` holds the shared filter logic). `MAP_TRACKS_LIMIT` in `src/api.ts` mirrors the server's
 - Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines

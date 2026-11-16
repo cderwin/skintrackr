@@ -30,7 +30,31 @@ export interface ImportStatus {
   tracks_total: number
   /** Activities intervals.icu doesn't serve through its API (synced from Strava). */
   skipped: number
+  /** Activities with a track left off the map when the import finished (beyond MAP_TRACKS_LIMIT). */
+  map_tracks_omitted: number
   error: string
+}
+
+/** One activity of the athlete's index. */
+export interface ActivitySummary {
+  id: string
+  name: string
+  /** intervals.icu's activity type, e.g. `BackcountrySki`. */
+  type: string
+  /** Local start, YYYY-MM-DDTHH:MM:SS. */
+  start_date_local: string
+  total_elevation_gain: number
+  distance: number
+  moving_time: number
+}
+
+export interface MapActivities {
+  /** Every activity, in no particular order. */
+  activities: ActivitySummary[]
+  /** The ids on the map (in its tracks), newest first. */
+  on_map: string[]
+  /** Older activities with a track that are left off the map. */
+  map_tracks_omitted: number
 }
 
 export interface Athlete {
@@ -41,8 +65,19 @@ export interface Athlete {
 /** How far back, by start date, the server syncs automatically (its SYNC_WINDOW_DAYS default). */
 export const SYNC_WINDOW_DAYS = 30
 
+/** How many tracks the map holds, the most recent (the server's MAP_TRACKS_LIMIT). */
+export const MAP_TRACKS_LIMIT = 3000
+
+/** The athlete's map tracks, for MapLibre through the PMTiles protocol (same origin, so the cookie goes too). */
+export const TRACKS_URL = '/api/tracks.pmtiles'
+
 /** Where athletes find their intervals.icu API key. */
 export const INTERVALS_SETTINGS_URL = 'https://intervals.icu/settings'
+
+/** An activity's page on intervals.icu. */
+export function intervalsActivityUrl(id: string): string {
+  return `https://intervals.icu/activities/${encodeURIComponent(id)}`
+}
 
 async function call<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -77,6 +112,7 @@ export const api = {
   vert: () => call<VertStats>('GET', `/api/stats/vert?today=${localDate()}`),
   importStatus: () => call<ImportStatus>('GET', '/api/import'),
   startImport: () => call<ImportStatus>('POST', '/api/import'),
+  activities: () => call<MapActivities>('GET', '/api/activities'),
   logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
   /** Delete everything stored for the athlete, and sign out. */
   disconnect: () => call<{ ok: boolean }>('POST', '/auth/disconnect'),
