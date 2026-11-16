@@ -17,6 +17,7 @@ jobs:
     name: Deploy app
     needs: ci
     runs-on: ubuntu-latest
+    environment: production      # VITE_MAPTILER_KEY is a production-environment secret
     concurrency: deploy-group    # only one deploy at a time
     steps:
       - uses: actions/checkout@v4
