@@ -1,8 +1,8 @@
 """Activity tracks for the map: one simplified GeoJSON feature per activity, and the athlete's PMTiles archive.
 
-- `track_feature`: an activity's track from its `latlng` stream, split at GPS dropouts, simplified with
-  Douglas–Peucker at `TOLERANCE_M` and rounded to `PRECISION` decimals. Its properties are what the map filters
-  on: `id`, `type` and `date` (`YYYYMMDD`, an integer, so date ranges are numeric comparisons).
+- `track_feature`: an activity's track from its `latlng` stream, split at GPS dropouts (`MAX_GAP_M` between fixes),
+  simplified with Douglas–Peucker at `TOLERANCE_M` and rounded to `PRECISION` decimals. Its properties are what the
+  map filters on: `id`, `type` and `date` (`YYYYMMDD`, an integer, so date ranges are numeric comparisons).
 - `map_track_ids`: which tracks go into the archive: the `MAP_TRACKS_LIMIT` most recent.
 - `build_pmtiles`: the archive (layer `tracks`), built with tippecanoe.
 
@@ -25,6 +25,9 @@ from skintrackr.models import Activity, ActivitySummary, Stream
 MAP_TRACKS_LIMIT = 3000
 # simplification tolerance: invisible at the archive's max zoom (z14, ~0.6 m per tile unit)
 TOLERANCE_M = 2.0
+# consecutive fixes farther apart than this are a GPS dropout, which splits the track rather than drawing a
+# straight line across it (rare: 17 such jumps in 150 real activities; most fixes are 1–5 s and a few m apart)
+MAX_GAP_M = 200.0
 # decimal places kept in coordinates (~0.1 m)
 PRECISION = 6
 LAYER = "tracks"
@@ -49,6 +52,12 @@ type Point = tuple[float, float]
 
 class TrackBuildError(Exception):
     """tippecanoe failed, or isn't installed."""
+
+
+def _metres(a: Point, b: Point) -> float:
+    """The distance between two (lon, lat) points, in metres (an equirectangular approximation)."""
+    scale_x = METERS_PER_DEGREE * math.cos(math.radians(a[1]))
+    return math.hypot((b[0] - a[0]) * scale_x, (b[1] - a[1]) * METERS_PER_DEGREE)
 
 
 def _simplify(points: list[Point], tolerance: float) -> list[Point]:
@@ -78,17 +87,22 @@ def _simplify(points: list[Point], tolerance: float) -> list[Point]:
 
 
 def _segments(streams: list[Stream]) -> list[list[Point]]:
-    """The `latlng` stream as (lon, lat) runs, split wherever a sample has no position."""
+    """The `latlng` stream's positions as (lon, lat) runs, split at GPS dropouts (`MAX_GAP_M` between fixes).
+
+    Samples without a position are skipped: watches log a fix every few seconds while other streams have one
+    sample a second, so most gaps are only a sample or two.
+    """
     latlng = next((stream for stream in streams if stream.type == "latlng"), None)
     if latlng is None:
         return []
     segments: list[list[Point]] = [[]]
     for lat, lon in zip(latlng.data, latlng.data2):
         if lat is None or lon is None:
-            if segments[-1]:
-                segments.append([])
-        else:
-            segments[-1].append((float(lon), float(lat)))
+            continue
+        point = (float(lon), float(lat))
+        if segments[-1] and _metres(segments[-1][-1], point) > MAX_GAP_M:
+            segments.append([])
+        segments[-1].append(point)
     return [segment for segment in segments if len(segment) >= 2]
 
 
