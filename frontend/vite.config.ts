@@ -3,7 +3,7 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 // Server routes; in `npm run dev` they go to a running skintrackr server (`just py-serve`).
-const serverRoutes = ['/oauth2', '/token', '/api', '/subscriptions', '/healthcheck']
+const serverRoutes = ['/auth', '/token', '/api', '/healthcheck']
 
 export default defineConfig({
   plugins: [vue()],

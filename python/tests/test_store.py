@@ -5,98 +5,36 @@ from typing import Any
 import pytest
 
 from skintrackr.clients.store import NotFoundError, Store
-from skintrackr.clients.strava import StravaError
 from skintrackr.crypto import TokenClaims, decrypt
-from skintrackr.models import ActivityMap, ActivitySummary, ImportStatus, TokenInfo
-from tests.conftest import ATHLETE_ID, SECRET, FakeStrava
-from tests.test_crypto import GO_CIPHERTEXT
+from skintrackr.models import ActivitySummary, ImportStatus
+from tests.conftest import API_KEY, ATHLETE_ID, SECRET
 
-TOKEN = TokenInfo(access_token="access", refresh_token="refresh", expires_at=int(time.time()) + 3600)
+OTHER_ATHLETE = "i9999"
 
-
-# --- Strava tokens
+# --- intervals.icu API keys
 
 
-def test_save_and_fetch_token(store: Store) -> None:
+def test_save_and_fetch_api_key(store: Store) -> None:
     async def run() -> None:
-        await store.save_token(ATHLETE_ID, TOKEN)
-        assert await store.fetch_token_info(ATHLETE_ID) == TOKEN
-        assert await store.fetch_token(ATHLETE_ID) == "access"
+        await store.save_api_key(ATHLETE_ID, API_KEY)
+        assert await store.fetch_api_key(ATHLETE_ID) == API_KEY
+        assert await store.connected_athletes() == [ATHLETE_ID]
 
     asyncio.run(run())
 
 
-def test_tokens_are_encrypted_at_rest(store: Store) -> None:
-    async def run() -> dict[Any, Any]:
-        await store.save_token(ATHLETE_ID, TOKEN)
-        return await store.redis.hgetall(f"athlete:{ATHLETE_ID}:strava-token")
+def test_api_keys_are_encrypted_at_rest(store: Store) -> None:
+    async def run() -> Any:
+        await store.save_api_key(ATHLETE_ID, API_KEY)
+        return await store.redis.get(f"athlete:{ATHLETE_ID}:intervals-key")
 
     stored = asyncio.run(run())
-    assert set(stored) == {"access_token", "refresh_token", "expires_at"}
-    assert stored["access_token"] != "access" and decrypt(stored["access_token"], SECRET) == "access"
-    assert stored["expires_at"] == str(TOKEN.expires_at)
-
-
-def test_reads_tokens_written_by_go(store: Store) -> None:
-    async def run() -> TokenInfo:
-        await store.redis.hset(
-            f"athlete:{ATHLETE_ID}:strava-token",
-            mapping={"access_token": GO_CIPHERTEXT, "refresh_token": GO_CIPHERTEXT, "expires_at": str(TOKEN.expires_at)},
-        )
-        return await store.fetch_token_info(ATHLETE_ID)
-
-    assert asyncio.run(run()).access_token == "strava-access-token"
+    assert stored != API_KEY and decrypt(stored, SECRET) == API_KEY
 
 
 def test_fetch_unknown_athlete(store: Store) -> None:
     with pytest.raises(NotFoundError):
-        asyncio.run(store.fetch_token(1))
-
-
-def test_expired_token_is_refreshed_and_saved(store: Store, strava: FakeStrava) -> None:
-    new_expiry = int(time.time()) + 21600
-    strava.add(
-        "POST",
-        "/oauth/token",
-        {"access_token": "new-access", "refresh_token": "new-refresh", "expires_at": new_expiry},
-    )
-
-    async def run() -> tuple[TokenInfo, TokenInfo]:
-        await store.save_token(ATHLETE_ID, TokenInfo("old-access", "old-refresh", int(time.time()) - 1))
-        return await store.fetch_token_info(ATHLETE_ID), await store.fetch_token_info(ATHLETE_ID)
-
-    refreshed, stored = asyncio.run(run())
-    assert refreshed == stored == TokenInfo("new-access", "new-refresh", new_expiry)
-    assert len(strava.requests) == 1  # the saved token is used the second time
-    assert "refresh_token=old-refresh" in strava.requests[0].content.decode()
-
-
-def test_failed_refresh_raises(store: Store) -> None:
-    async def run() -> None:
-        await store.save_token(ATHLETE_ID, TokenInfo("old-access", "old-refresh", int(time.time()) - 1))
-        await store.fetch_token(ATHLETE_ID)
-
-    with pytest.raises(StravaError):
-        asyncio.run(run())
-
-
-# --- OAuth state
-
-
-def test_oauth_state_is_single_use(store: Store) -> None:
-    async def run() -> tuple[str, int, bool, bool]:
-        state = await store.save_oauth_state()
-        ttl = await store.redis.ttl(f"oauth:state:{state}")
-        return state, ttl, await store.consume_oauth_state(state), await store.consume_oauth_state(state)
-
-    state, ttl, first, second = asyncio.run(run())
-    assert len(state) == 64
-    assert 590 <= ttl <= 600
-    assert (first, second) == (True, False)
-
-
-def test_unknown_oauth_state(store: Store) -> None:
-    assert asyncio.run(store.consume_oauth_state("nope")) is False
+        asyncio.run(store.fetch_api_key("i1"))
 
 
 # --- API tokens
@@ -117,7 +55,7 @@ def test_save_jwt(store: Store) -> None:
 
     stored, ttl = asyncio.run(run())
     assert stored == {
-        "athlete_id": str(ATHLETE_ID),
+        "athlete_id": ATHLETE_ID,
         "issued_at": str(token.issued_at),
         "expires_at": str(token.expires_at),
     }
@@ -150,18 +88,18 @@ def test_revoke_unknown_jwt(store: Store) -> None:
 
 
 def test_activity_index(store: Store) -> None:
-    first = ActivitySummary(id=1, name="Skin", sport_type="BackcountrySki", map=ActivityMap(summary_polyline="abc"))
-    second = ActivitySummary(id=2, total_elevation_gain=12.5)
+    first = ActivitySummary(id="i1", name="Skin", type="BackcountrySki")
+    second = ActivitySummary(id="i2", total_elevation_gain=12.5)
 
     async def run() -> None:
         await store.save_activities(ATHLETE_ID, [first, second])
         await store.save_activities(ATHLETE_ID, [])  # nothing to write
-        renamed = ActivitySummary(id=1, name="Renamed")
+        renamed = ActivitySummary(id="i1", name="Renamed")
         await store.save_activities(ATHLETE_ID, [renamed])
         assert sorted(await store.activities(ATHLETE_ID), key=lambda a: a.id) == [renamed, second]
-        await store.delete_activity(ATHLETE_ID, 2)
+        await store.delete_activity(ATHLETE_ID, "i2")
         assert await store.activities(ATHLETE_ID) == [renamed]
-        assert await store.activities(ATHLETE_ID + 1) == []
+        assert await store.activities(OTHER_ATHLETE) == []
 
     asyncio.run(run())
 
@@ -185,18 +123,46 @@ def test_import_status_tracks_running_imports(store: Store) -> None:
 
 def test_delete_athlete(store: Store) -> None:
     async def run() -> None:
-        await store.save_token(ATHLETE_ID, TOKEN)
-        await store.save_activities(ATHLETE_ID, [ActivitySummary(id=1)])
+        await store.save_api_key(ATHLETE_ID, API_KEY)
+        await store.save_activities(ATHLETE_ID, [ActivitySummary(id="i1")])
         await store.save_import(ATHLETE_ID, ImportStatus(state="running"))
-        await store.save_token(ATHLETE_ID + 1, TOKEN)
+        await store.save_api_key(OTHER_ATHLETE, "other-key")
 
         await store.delete_athlete(ATHLETE_ID)
         assert await store.activities(ATHLETE_ID) == []
         assert await store.load_import(ATHLETE_ID) == ImportStatus()
         assert await store.running_imports() == []
+        assert await store.connected_athletes() == [OTHER_ATHLETE]
         with pytest.raises(NotFoundError):
-            await store.fetch_token(ATHLETE_ID)
-        assert await store.fetch_token(ATHLETE_ID + 1) == "access"
+            await store.fetch_api_key(ATHLETE_ID)
+        assert await store.fetch_api_key(OTHER_ATHLETE) == "other-key"
 
     asyncio.run(run())
 
+
+
+# --- everything (migrations)
+
+
+def test_delete_everything_leaves_other_keys(store: Store) -> None:
+    async def run() -> tuple[list[str], int, list[Any]]:
+        await store.save_api_key(ATHLETE_ID, API_KEY)
+        await store.save_import(ATHLETE_ID, ImportStatus(state="running"))
+        await store.redis.hset(f"athlete:{ATHLETE_ID}:old-token", mapping={"access_token": "old"})  # an earlier version's
+        await store.redis.set("oauth:state:abc", 1)
+        await store.redis.set("someone-elses-key", 1)
+        keys = await store.app_keys()
+        deleted = await store.delete_everything()
+        return keys, deleted, await store.redis.keys("*")
+
+    keys, deleted, left = asyncio.run(run())
+    assert keys == [
+        f"athlete:{ATHLETE_ID}:import",
+        f"athlete:{ATHLETE_ID}:intervals-key",
+        f"athlete:{ATHLETE_ID}:old-token",
+        "athletes:connected",
+        "imports:running",
+        "oauth:state:abc",
+    ]
+    assert deleted == 6
+    assert left == ["someone-elses-key"]

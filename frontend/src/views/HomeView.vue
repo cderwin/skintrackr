@@ -7,7 +7,7 @@ import PageCard from '@/components/PageCard.vue'
 
 const signedIn = useSignedIn()
 const features = [
-  'Instant notifications for new ski activities',
+  'New activities sync automatically',
   'Track your vertical gain and distance',
   'Build your season statistics',
 ]
@@ -17,7 +17,7 @@ const features = [
   <PageCard
     icon="⛷️"
     title="Backcountry Ski Tracker"
-    subtitle="Automatically track your backcountry ski adventures from Strava"
+    subtitle="Automatically track your backcountry ski adventures from intervals.icu"
     :features="features"
   >
     <template v-if="signedIn">
@@ -27,15 +27,8 @@ const features = [
     <ConnectButton v-else-if="signedIn === false" />
 
     <template #disclaimer>
-      By connecting, you authorize this app to access your <span class="strava">Strava</span> activity data. We
-      only read your activities - we never post or modify anything.
+      Connecting gives this app read access to your intervals.icu activities with your API key. We only read
+      your activities - we never post or modify anything.
     </template>
   </PageCard>
 </template>
-
-<style scoped>
-.strava {
-  font-weight: 600;
-  color: #fc4c02;
-}
-</style>

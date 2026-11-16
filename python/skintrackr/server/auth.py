@@ -1,7 +1,7 @@
 """Issuing skintrackr's API tokens (JWTs) and authenticating requests with them.
 
-A request carries its token as a bearer token (`/token/callback` issues those, for the CLI) or in the
-session cookie (set by `/oauth2/callback`, for the browser).
+A request carries its token as a bearer token (`/token/new` issues those, for scripts) or in the session
+cookie (set by `/auth/connect`, for the browser).
 """
 
 import time
@@ -40,7 +40,7 @@ class AuthTokenInfo:
         valid: Always True: invalid tokens raise instead.
     """
 
-    athlete_id: int
+    athlete_id: str
     issued_at: int
     expires_at: int
     jti: str
@@ -86,7 +86,7 @@ def session_cookie(token: str | None) -> Cookie:
     return Cookie(key=SESSION_COOKIE, value=token or "", max_age=max_age, secure=True, httponly=True, samesite="lax")
 
 
-async def issue_token(services: Services, athlete_id: int) -> str:
+async def issue_token(services: Services, athlete_id: str) -> str:
     """Sign a new API token for an athlete and record it (so it can be revoked); returns the JWT.
 
     Raises:

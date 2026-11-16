@@ -1,9 +1,10 @@
+import json
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 
-from skintrackr.clients.strava import merge_streams
+from skintrackr.clients.intervals import merge_streams
 from skintrackr.gpx import GPX_NAMESPACE, SCHEMA_LOCATION, TRACKPOINT_EXTENSION_NAMESPACE, GpxMetadata, build_gpx
-from skintrackr.models import RawStream, StreamPoint, converter
+from skintrackr.models import Stream, StreamPoint, loads
 from tests.conftest import ACTIVITY, STREAMS
 
 NS = {"gpx": GPX_NAMESPACE, "gpxtpx": TRACKPOINT_EXTENSION_NAMESPACE}
@@ -76,7 +77,7 @@ def test_heart_rate_and_temperature_extensions() -> None:
 
 
 def test_matches_go_export() -> None:
-    points = merge_streams(converter.structure(STREAMS, list[RawStream]))
+    points = merge_streams(loads(json.dumps(STREAMS), list[Stream]))
     ours = build_gpx(points, GpxMetadata(name=str(ACTIVITY["name"]), type=str(ACTIVITY["type"]), time=START))
     # Go's output uses the xsi prefix without declaring it, which XML parsers reject; declare it to compare
     go = GO_EXPORT.replace("xsi:schemaLocation", 'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation')

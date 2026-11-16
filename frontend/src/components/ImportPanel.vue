@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// Bulk import of the athlete's Strava activities: start it, and follow its progress while it runs.
+// Bulk import (Re-sync) of the athlete's intervals.icu activities: start it, and follow its progress while it runs.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, type ImportStatus } from '@/api'
+import { api, SYNC_WINDOW_DAYS, type ImportStatus } from '@/api'
 
 const POLL_MS = 3000
 
@@ -33,13 +33,13 @@ const summary = computed(() => {
   if (!s) return ''
   switch (s.state) {
     case 'idle':
-      return 'Import your Strava history to see your season stats.'
+      return 'Import your intervals.icu history to see your season stats.'
     case 'running':
       return s.tracks_total
         ? `${s.activities} activities imported · tracks ${s.tracks_done} of ${s.tracks_total}`
         : 'Listing your activities…'
     case 'done':
-      return `All ${s.activities} activities imported. New ones sync automatically.`
+      return `All ${s.activities} activities imported.`
     case 'failed':
       return `Import stopped: ${s.error}`
   }
@@ -52,8 +52,11 @@ const summary = computed(() => {
     <p class="summary" :class="{ failed: status.state === 'failed' }">{{ summary }}</p>
     <template v-if="status.state === 'running' && status.tracks_total">
       <div class="bar"><span :style="{ width: `${progress * 100}%` }" /></div>
-      <small>Stats are ready. Full tracks download in the background, within Strava's rate limits.</small>
+      <small>Stats are ready. Full tracks download in the background.</small>
     </template>
+    <small v-if="status.skipped">
+      {{ status.skipped }} activities synced from Strava were skipped: intervals.icu doesn't share those through its API.
+    </small>
     <button
       v-else
       class="small-button"
@@ -61,8 +64,12 @@ const summary = computed(() => {
       type="button"
       @click="refresh(api.startImport)"
     >
-      {{ status.state === 'idle' ? 'Import my Strava activities' : status.state === 'failed' ? 'Resume import' : 'Re-sync' }}
+      {{ status.state === 'idle' ? 'Import my activities' : status.state === 'failed' ? 'Resume import' : 'Re-sync' }}
     </button>
+    <small v-if="status.state === 'done'">
+      New activities and edits from the last {{ SYNC_WINDOW_DAYS }} days sync automatically. Re-sync to pick up
+      changes to anything older.
+    </small>
     <small v-if="error" class="failed">{{ error }}</small>
   </section>
 </template>

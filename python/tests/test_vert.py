@@ -6,10 +6,8 @@ from skintrackr.vert import year_to_date
 AS_OF = date(2026, 11, 14)
 
 
-def activity(activity_id: int, day: str, vert: float, sport_type: str = "BackcountrySki") -> ActivitySummary:
-    return ActivitySummary(
-        id=activity_id, sport_type=sport_type, start_date_local=f"{day}T09:00:00Z", total_elevation_gain=vert
-    )
+def activity(activity_id: int, day: str, vert: float, type: str = "BackcountrySki") -> ActivitySummary:
+    return ActivitySummary(id=f"i{activity_id}", type=type, start_date_local=f"{day}T09:00:00", total_elevation_gain=vert)
 
 
 def totals(activities: list[ActivitySummary], as_of: date = AS_OF) -> dict[int, float]:
@@ -24,12 +22,13 @@ def test_sums_on_foot_vert_from_jan_1_to_the_same_date() -> None:
         activity(4, "2025-11-15", 500.0, "Hike"),  # after the date
         activity(5, "2025-02-01", 900.0, "Ride"),  # cycling
         activity(6, "2025-01-10", 700.0, "AlpineSki"),  # lift-served
+        activity(9, "2025-03-10", 400.0, "TrackRide"),
         activity(7, "2021-06-01", 50.0, "Walk"),  # oldest year shown
         activity(8, "2020-06-01", 70.0, "Walk"),  # too old
     ]
     stats = year_to_date(activities, AS_OF)
     assert stats.as_of == AS_OF
-    assert stats.activities == 8
+    assert stats.activities == 9
     assert [(y.year, y.vert_m) for y in stats.years] == [
         (2026, 1200.0),
         (2025, 300.0),

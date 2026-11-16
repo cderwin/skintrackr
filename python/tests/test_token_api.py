@@ -1,32 +1,20 @@
 import time
 from datetime import timedelta
-from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fakeredis import FakeServer
 from litestar.testing import TestClient
 
 from skintrackr.crypto import generate_jwt, verify_jwt
-from tests.conftest import ATHLETE_ID, SECRET, FakeStrava, bearer, issue_api_token, save_strava_token, with_store
-from tests.test_oauth2 import TOKEN_RESPONSE
+from skintrackr.server.connect import INVALID_KEY_MESSAGE
+from tests.conftest import API_KEY, ATHLETE_ID, SECRET, FakeIntervals, bearer, issue_api_token, with_store
+
+# --- /token/new
 
 
-def start_flow(client: TestClient) -> str:
-    """Start the token OAuth flow; returns the state Strava would send back."""
-    response = client.get("/token/new", follow_redirects=False)
-    assert response.status_code == 302
-    params = parse_qs(urlsplit(response.headers["location"]).query)
-    assert params["redirect_uri"] == ["https://skintrackr.test/token/callback"]
-    return params["state"][0]
-
-
-# --- /token/new and /token/callback
-
-
-def test_token_flow_issues_jwt(client: TestClient, strava: FakeStrava, redis_server: FakeServer) -> None:
-    strava.add("POST", "/oauth/token", TOKEN_RESPONSE)
-    state = start_flow(client)
-    response = client.get("/token/callback", params={"code": "the-code", "state": state})
+def test_token_new_issues_jwt(client: TestClient, intervals: FakeIntervals, redis_server: FakeServer) -> None:
+    intervals.add_athlete()
+    response = client.post("/token/new", json={"api_key": API_KEY})
 
     assert response.status_code == 200
     body = response.json()
@@ -34,36 +22,16 @@ def test_token_flow_issues_jwt(client: TestClient, strava: FakeStrava, redis_ser
     claims = verify_jwt(body["access_token"], SECRET)
     assert claims.athlete_id == ATHLETE_ID
     assert claims.expires_at - claims.issued_at == 30 * 24 * 3600
-    # the Strava token was saved, and the JWT recorded for revocation
-    assert with_store(redis_server, lambda s: s.fetch_token(ATHLETE_ID)) == "access"
+    # the API key was saved, and the JWT recorded for revocation
+    assert with_store(redis_server, lambda s: s.fetch_api_key(ATHLETE_ID)) == API_KEY
     assert with_store(redis_server, lambda s: s.redis.exists(f"jwt:jti:{claims.jti}")) == 1
-
-    # the state is single use
-    replay = client.get("/token/callback", params={"code": "the-code", "state": state})
-    assert replay.status_code == 403
+    assert "set-cookie" not in response.headers
 
 
-@pytest.mark.parametrize(
-    ("params", "message"),
-    [({"state": "s"}, "No code in callback"), ({"code": "c"}, "No state in callback")],
-)
-def test_token_callback_requires_code_and_state(client: TestClient, params: dict[str, str], message: str) -> None:
-    response = client.get("/token/callback", params=params)
-    assert response.status_code == 400
-    assert response.json() == {"message": message}
-
-
-def test_token_callback_rejects_unknown_state(client: TestClient, strava: FakeStrava) -> None:
-    response = client.get("/token/callback", params={"code": "c", "state": "forged"})
-    assert response.status_code == 403
-    assert response.json() == {"message": "Invalid or expired state token"}
-    assert strava.requests == []
-
-
-def test_token_callback_exchange_failure(client: TestClient, strava: FakeStrava) -> None:
-    strava.add("POST", "/oauth/token", {}, status=401)
-    response = client.get("/token/callback", params={"code": "c", "state": start_flow(client)})
-    assert response.status_code == 500
+def test_token_new_rejected_key(client: TestClient, intervals: FakeIntervals) -> None:
+    intervals.add_athlete()
+    response = client.post("/token/new", json={"api_key": "wrong"})
+    assert (response.status_code, response.json()) == (400, {"message": INVALID_KEY_MESSAGE})
 
 
 # --- /token/verify
@@ -136,26 +104,3 @@ def test_revoke_unrecorded_token(client: TestClient) -> None:
     token, _ = generate_jwt(ATHLETE_ID, SECRET, timedelta(hours=1))
     response = client.post("/token/revoke", headers=bearer(token))
     assert (response.status_code, response.json()) == (500, {"message": "Failed to revoke token"})
-
-
-# --- /api/strava-token
-
-
-def test_strava_token(client: TestClient, redis_server: FakeServer) -> None:
-    stored = save_strava_token(redis_server)
-    response = client.get("/api/strava-token", headers=bearer(issue_api_token(redis_server)))
-    assert response.status_code == 200
-    assert response.json() == {
-        "access_token": stored.access_token,
-        "refresh_token": stored.refresh_token,
-        "expires_at": stored.expires_at,
-    }
-
-
-def test_strava_token_requires_auth(client: TestClient) -> None:
-    assert client.get("/api/strava-token").status_code == 401
-
-
-def test_strava_token_not_connected(client: TestClient, redis_server: FakeServer) -> None:
-    response = client.get("/api/strava-token", headers=bearer(issue_api_token(redis_server)))
-    assert (response.status_code, response.json()) == (500, {"message": "failed to fetch Strava token"})

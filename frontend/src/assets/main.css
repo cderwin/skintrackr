@@ -66,12 +66,12 @@ body::after {
 
 /* Shared by the pages */
 .brand-link {
-  color: #fc4c02;
+  color: #c2410c;
   text-decoration: none;
   font-weight: 600;
 }
 
-/* full-width call to action, e.g. Connect with Strava */
+/* full-width call to action, e.g. Connect intervals.icu */
 .big-button {
   padding: 18px 36px;
   font-size: 18px;

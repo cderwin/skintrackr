@@ -1,10 +1,9 @@
 <script setup lang="ts">
-// Settings, over the page: vert goal and units (saved in this browser), the Strava token, and signing out.
+// Settings, over the page: vert goal and units (saved in this browser), signing out, and disconnecting.
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type StravaToken } from '@/api'
+import { api } from '@/api'
 import { fromUnits, settings, toUnits, type Units } from '@/settings'
-import TokenField from '@/components/TokenField.vue'
 
 const emit = defineEmits<{ close: [] }>()
 const router = useRouter()
@@ -17,25 +16,26 @@ const goal = computed({
 })
 const unitOptions: Units[] = ['ft', 'm']
 
-const token = ref<StravaToken | null>(null)
-const tokenError = ref('')
-async function fetchToken(): Promise<void> {
-  tokenError.value = ''
-  try {
-    token.value = await api.stravaToken()
-  } catch (e) {
-    tokenError.value = e instanceof Error ? e.message : String(e)
-  }
-}
-const tokenExpiry = computed(() =>
-  token.value
-    ? new Date(token.value.expires_at * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-    : '',
-)
-
 async function signOut(): Promise<void> {
   await api.logout().catch(() => undefined)
   await router.push('/')
+}
+
+// disconnecting deletes everything, so it takes a second click to confirm
+const confirmingDisconnect = ref(false)
+const disconnectError = ref('')
+async function disconnect(): Promise<void> {
+  if (!confirmingDisconnect.value) {
+    confirmingDisconnect.value = true
+    return
+  }
+  disconnectError.value = ''
+  try {
+    await api.disconnect()
+    await router.push('/')
+  } catch (e) {
+    disconnectError.value = e instanceof Error ? e.message : String(e)
+  }
 }
 </script>
 
@@ -67,17 +67,24 @@ async function signOut(): Promise<void> {
         </span>
       </label>
 
-      <div class="field">
-        <span>Strava access token</span>
-        <template v-if="token">
-          <TokenField :token="token.access_token" label="Strava access token" />
-          <small>Expires {{ tokenExpiry }}. Treat it like a password.</small>
-        </template>
-        <button v-else class="small-button" type="button" @click="fetchToken">Show my Strava token</button>
-        <small v-if="tokenError" class="error">{{ tokenError }}</small>
-      </div>
+      <button class="small-button align-start" type="button" @click="signOut">Sign out</button>
 
-      <button class="small-button sign-out" type="button" @click="signOut">Sign out</button>
+      <div class="field">
+        <span>intervals.icu connection</span>
+        <small>
+          Disconnecting deletes your stored API key, archived activities and stats from this app. Your intervals.icu
+          account isn't changed.
+        </small>
+        <span class="disconnect-row">
+          <button class="small-button align-start danger" type="button" @click="disconnect">
+            {{ confirmingDisconnect ? 'Yes, delete my data' : 'Disconnect and delete my data' }}
+          </button>
+          <button v-if="confirmingDisconnect" class="small-button" type="button" @click="confirmingDisconnect = false">
+            Cancel
+          </button>
+        </span>
+        <small v-if="disconnectError" class="error">{{ disconnectError }}</small>
+      </div>
     </section>
   </div>
 </template>
@@ -179,7 +186,17 @@ h2 {
   color: white;
 }
 
-.sign-out {
+.align-start {
   align-self: flex-start;
+}
+
+.disconnect-row {
+  display: flex;
+  gap: 8px;
+}
+
+.small-button.danger {
+  color: #b91c1c;
+  border-color: #fca5a5;
 }
 </style>

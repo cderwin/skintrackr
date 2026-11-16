@@ -1,1 +1,1 @@
-"""skintrackr: a Strava webhook server that archives activities and exports them as GPX."""
+"""skintrackr: archives intervals.icu activities, tracks season vert, and exports activities as GPX."""

@@ -51,7 +51,7 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS
   <FloatingButton v-if="!signedOut" side="right" label="Settings" @click="showSettings = true">⚙️</FloatingButton>
   <SettingsPanel v-if="showSettings" @close="showSettings = false" />
 
-  <PageCard v-if="signedOut" icon="⛰️" title="Season vert" subtitle="Connect your Strava account to see your stats">
+  <PageCard v-if="signedOut" icon="⛰️" title="Season vert" subtitle="Connect your intervals.icu account to see your stats">
     <ConnectButton />
   </PageCard>
 

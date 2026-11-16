@@ -1,17 +1,19 @@
 """Configuration from environment variables (see the README)."""
 
 import os
-import secrets
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Self
 
 from attrs import field, frozen
 
+from skintrackr.clients.intervals import BACKGROUND_SPACING, DEFAULT_LIMITS
 from skintrackr.crypto import secret_key_from_hex
 
-DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_BUCKET_NAME = "skintrackr-storage"
 DEFAULT_S3_ENDPOINT = "https://t3.storage.dev"
+DEFAULT_SYNC_INTERVAL = timedelta(minutes=15)
+DEFAULT_SYNC_WINDOW = timedelta(days=30)
 
 
 class ConfigError(Exception):
@@ -25,10 +27,17 @@ def _require(env: Mapping[str, str], *names: str) -> list[str]:
     return values
 
 
-def debug_strava_responses(env: Mapping[str, str] | None = None) -> bool:
-    """Whether `DEBUG_STRAVA_RESPONSE_BODY` asks for Strava response bodies to be saved (any value but "false")."""
-    value = (os.environ if env is None else env).get("DEBUG_STRAVA_RESPONSE_BODY", "")
-    return value.lower() not in ("", "false")
+def _positive_int(env: Mapping[str, str], name: str, default: int) -> int:
+    value = env.get(name, "")
+    if not value:
+        return default
+    try:
+        number = int(value)
+    except ValueError:
+        number = 0
+    if number <= 0:
+        raise ConfigError(f"{name} must be a positive integer")
+    return number
 
 
 @frozen
@@ -38,8 +47,8 @@ class BlobStorageConfig:
     Attributes:
         access_key_id: `AWS_ACCESS_KEY_ID`.
         secret_access_key: `AWS_SECRET_ACCESS_KEY`.
-        bucket_name: Bucket activities are archived to.
-        endpoint_url: S3 API endpoint.
+        bucket_name: Bucket activities are archived to (`S3_BUCKET_NAME`).
+        endpoint_url: S3 API endpoint (`S3_ENDPOINT_URL`; e.g. the local SeaweedFS in docker-compose.yml).
     """
 
     access_key_id: str
@@ -52,7 +61,12 @@ class BlobStorageConfig:
         """Load from the environment; raises ConfigError if the credentials are missing."""
         env = os.environ if env is None else env
         access_key_id, secret_access_key = _require(env, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
-        return cls(access_key_id=access_key_id, secret_access_key=secret_access_key)
+        return cls(
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            bucket_name=env.get("S3_BUCKET_NAME") or DEFAULT_BUCKET_NAME,
+            endpoint_url=env.get("S3_ENDPOINT_URL") or DEFAULT_S3_ENDPOINT,
+        )
 
 
 @frozen
@@ -61,24 +75,25 @@ class Config:
 
     Attributes:
         blob_storage: Where activities are archived.
-        base_url: Public URL of the server, for OAuth and webhook callbacks (`APP_BASE_URL`).
-        strava_client_id: Strava API application id (`STRAVA_CLIENT_ID`).
-        strava_client_secret: Strava API application secret (`STRAVA_CLIENT_SECRET`).
         redis_url: Redis connection URL (`UPSTASH_REDIS_URL`).
-        secret: Hex-encoded key, at least 32 bytes, that signs JWTs and encrypts stored tokens (`APP_SECRET`).
-        verify_token: Random token Strava echoes back when verifying the webhook subscription; new each start.
-        debug_strava_responses: Save every Strava response body to the working directory
-            (`DEBUG_STRAVA_RESPONSE_BODY`).
+        secret: Hex-encoded key, at least 32 bytes, that signs JWTs and encrypts stored API keys (`APP_SECRET`).
+        rate_limits: intervals.icu requests allowed per 15 minutes and per day, until a response reports them
+            (`INTERVALS_RATE_LIMIT_15MIN`, `INTERVALS_RATE_LIMIT_DAILY`).
+        background_spacing: Minimum seconds between background intervals.icu requests.
+        sync_interval: How often connected athletes' recent activities are synced (`SYNC_INTERVAL_MINUTES`).
+        sync_window: How far back each sync looks, by start date (`SYNC_WINDOW_DAYS`).
+        debug_responses: Save every intervals.icu response body to the working directory
+            (`DEBUG_INTERVALS_RESPONSE_BODY`).
     """
 
     blob_storage: BlobStorageConfig
-    strava_client_id: str
-    strava_client_secret: str = field(repr=False)
     redis_url: str = field(repr=False)
     secret: str = field(repr=False)
-    base_url: str = DEFAULT_BASE_URL
-    verify_token: str = field(factory=lambda: secrets.token_hex(16), repr=False)
-    debug_strava_responses: bool = False
+    rate_limits: tuple[int, int] = DEFAULT_LIMITS
+    background_spacing: float = BACKGROUND_SPACING
+    sync_interval: timedelta = DEFAULT_SYNC_INTERVAL
+    sync_window: timedelta = DEFAULT_SYNC_WINDOW
+    debug_responses: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Self:
@@ -89,18 +104,18 @@ class Config:
             secret_key_from_hex(secret)
         except ValueError as e:
             raise ConfigError(f"APP_SECRET is invalid: {e}") from e
-        client_id, client_secret = _require(env, "STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET")
         (redis_url,) = _require(env, "UPSTASH_REDIS_URL")
         return cls(
             blob_storage=BlobStorageConfig.from_env(env),
-            base_url=env.get("APP_BASE_URL") or DEFAULT_BASE_URL,
-            strava_client_id=client_id,
-            strava_client_secret=client_secret,
             redis_url=redis_url,
             secret=secret,
-            debug_strava_responses=debug_strava_responses(env),
+            rate_limits=(
+                _positive_int(env, "INTERVALS_RATE_LIMIT_15MIN", DEFAULT_LIMITS[0]),
+                _positive_int(env, "INTERVALS_RATE_LIMIT_DAILY", DEFAULT_LIMITS[1]),
+            ),
+            sync_interval=timedelta(
+                minutes=_positive_int(env, "SYNC_INTERVAL_MINUTES", int(DEFAULT_SYNC_INTERVAL.total_seconds() // 60))
+            ),
+            sync_window=timedelta(days=_positive_int(env, "SYNC_WINDOW_DAYS", DEFAULT_SYNC_WINDOW.days)),
+            debug_responses=env.get("DEBUG_INTERVALS_RESPONSE_BODY", "").lower() not in ("", "false"),
         )
-
-    def url(self, path: str) -> str:
-        """An absolute URL on this server, e.g. `url("oauth2/callback")`."""
-        return f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
