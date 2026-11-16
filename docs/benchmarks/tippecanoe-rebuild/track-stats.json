@@ -1,0 +1,9 @@
+{
+  "activities": 10000,
+  "samples_mean": 12659.293,
+  "kept_mean": 969.8832,
+  "kept_median": 970.5,
+  "kept_p95": 1750.0,
+  "reduction": 13.052389194905118,
+  "feature_bytes_mean": 23144.8159
+}
