@@ -61,7 +61,7 @@ settings fail at startup (`ConfigError`).
 | `POST /api/activity/{id}/persist` | bearer | Archive and index the activity: `{"ok": true, "activityId": id}` |
 | `POST /api/import` | bearer | Start a bulk import (Re-sync) of the athlete's activities (202; no-op if one is running); answers with its status |
 | `GET /api/import` | bearer | Import progress: `{"state": "idle"\|"running"\|"done"\|"failed", "activities", "tracks_done", "tracks_total", "skipped", "map_tracks_omitted", "error"}` |
-| `GET /api/activities` | bearer | The athlete's activity index (`ActivitySummary` objects, in no particular order), for the map |
+| `GET /api/activities` | bearer | For the map: `{"activities": [ActivitySummary, ...] (in no particular order), "on_map": [id, ...] (the ids in its tracks, newest first), "map_tracks_omitted"}` |
 | `GET /api/tracks.pmtiles` | bearer | The athlete's map tracks (PMTiles), whole or by HTTP `Range` (206), with an `ETag`; 404 before the first build |
 | `GET /api/stats/vert?today=YYYY-MM-DD` | bearer | On-foot vert from Jan 1 to today's date, this year and the 5 before, from the activity index: `{"as_of", "activities", "years": [{"year", "vert_m"}, ...]}` |
 

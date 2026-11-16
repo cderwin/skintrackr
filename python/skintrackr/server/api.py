@@ -16,7 +16,7 @@ from skintrackr.server.auth import authenticate_request
 from skintrackr.server.errors import fail_with
 from skintrackr.server.ingest import ingest_activity, start_import
 from skintrackr.server.services import get_services
-from skintrackr.tracks import PMTILES_MEDIA_TYPE
+from skintrackr.tracks import PMTILES_MEDIA_TYPE, map_track_ids
 from skintrackr.vert import year_to_date
 
 GPX_MEDIA_TYPE = "application/gpx+xml"
@@ -114,13 +114,19 @@ async def vert_stats(request: Request, state: State, today: FromQuery[date | Non
 
 
 @get("/api/activities")
-async def list_activities(request: Request, state: State) -> list[dict[str, Any]]:
-    """The athlete's activity index (for the map's popups and filters), in no particular order."""
+async def list_activities(request: Request, state: State) -> dict[str, Any]:
+    """The athlete's activity index (in no particular order) and which of them are on the map, for its popups
+    and filters: `{"activities", "on_map": [id, ...] (newest first), "map_tracks_omitted"}`."""
     services = get_services(state)
     info = await authenticate_request(request, services)
     with fail_with("failed to load activities", athlete_id=info.athlete_id):
         activities = await services.store.activities(info.athlete_id)
-    return converter.unstructure(activities)
+        tracks = map_track_ids(activities, await services.blob_store.track_activity_ids(info.athlete_id))
+    return {
+        "activities": converter.unstructure(activities),
+        "on_map": tracks.included,
+        "map_tracks_omitted": tracks.omitted,
+    }
 
 
 @get("/api/tracks.pmtiles")

@@ -218,14 +218,22 @@ def test_vert_stats_rejects_far_off_dates(client: TestClient, redis_server: Fake
 # --- map
 
 
-def test_activities(client: TestClient, redis_server: FakeServer) -> None:
-    rows = [ActivitySummary(id="i1", name="Skin", type="BackcountrySki"), ActivitySummary(id="i2", type="Ride")]
+def test_activities(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    rows = [
+        ActivitySummary(id="i1", name="Skin", type="BackcountrySki", start_date_local="2025-01-01T09:00:00"),
+        ActivitySummary(id="i2", type="Ride", start_date_local="2026-01-01T09:00:00"),
+        ActivitySummary(id="i3", type="VirtualRide", start_date_local="2026-02-01T09:00:00"),  # no track
+    ]
     with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, rows))
     with_store(redis_server, lambda s: s.save_activities("i777", [ActivitySummary(id="other")]))
+    for activity_id in ("i1", "i2"):
+        bucket.put(archive_keys(ATHLETE_ID, activity_id).track)
     response = client.get(ACTIVITIES, headers=session(issue_api_token(redis_server)))
     assert response.status_code == 200
-    assert sorted(a["id"] for a in response.json()) == ["i1", "i2"]
-    assert next(a for a in response.json() if a["id"] == "i1")["name"] == "Skin"
+    body = response.json()
+    assert sorted(a["id"] for a in body["activities"]) == ["i1", "i2", "i3"]
+    assert next(a for a in body["activities"] if a["id"] == "i1")["name"] == "Skin"
+    assert (body["on_map"], body["map_tracks_omitted"]) == (["i2", "i1"], 0)
 
 
 def test_tracks_before_any_build(client: TestClient, redis_server: FakeServer) -> None:
