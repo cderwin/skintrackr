@@ -12,6 +12,7 @@ See docs/plans/activity-map.md, and docs/benchmarks/tippecanoe-rebuild for why t
 import asyncio
 import json
 import math
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -138,16 +139,18 @@ async def build_pmtiles(features: list[bytes]) -> bytes:
     with tempfile.TemporaryDirectory(prefix="skintrackr-tracks-") as work:
         source, archive = Path(work) / "tracks.ndjson", Path(work) / "tracks.pmtiles"
         await asyncio.to_thread(source.write_bytes, b"\n".join(features) + b"\n")
+        # Popen and a thread rather than asyncio's subprocesses: a cancel while those connect their pipes can
+        # hang the task forever (CPython 3.12), which would block the athlete's later rebuilds
         try:
-            process = await asyncio.create_subprocess_exec(
-                TIPPECANOE, f"--output={archive}", f"--temporary-directory={work}", *TIPPECANOE_FLAGS, str(source),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+            process = subprocess.Popen(
+                [TIPPECANOE, f"--output={archive}", f"--temporary-directory={work}", *TIPPECANOE_FLAGS, str(source)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
         except FileNotFoundError as e:
             raise TrackBuildError(f"{TIPPECANOE} isn't installed (see python/README.md)") from e
         try:
-            _, stderr = await process.communicate()
+            _, stderr = await asyncio.to_thread(process.communicate)
         except asyncio.CancelledError:
             process.kill()
             raise

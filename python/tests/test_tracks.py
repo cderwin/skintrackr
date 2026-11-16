@@ -2,8 +2,11 @@ import asyncio
 import gzip
 import json
 import math
+import os
 import shutil
+import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -118,3 +121,36 @@ def test_build_pmtiles_without_tippecanoe(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr("skintrackr.tracks.TIPPECANOE", "tippecanoe-that-does-not-exist")
     with pytest.raises(TrackBuildError, match="isn't installed"):
         asyncio.run(build_pmtiles([b"{}"]))
+
+
+@pytest.mark.parametrize("delay", [0, 0.05, 0.3])
+def test_build_pmtiles_cancelled_stops_tippecanoe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delay: float) -> None:
+    """Cancelling a build (at shutdown, or when an athlete disconnects) ends it promptly and kills tippecanoe."""
+    pid_file = tmp_path / "pid"
+    slow = tmp_path / "slow-tippecanoe"
+    slow.write_text(f"#!/bin/sh\necho $$ > {pid_file}\nexec sleep 30\n")
+    slow.chmod(0o755)
+    monkeypatch.setattr("skintrackr.tracks.TIPPECANOE", str(slow))
+
+    async def run() -> None:
+        task = asyncio.create_task(build_pmtiles([b"{}"]))
+        await asyncio.sleep(delay)
+        task.cancel()
+        async with asyncio.timeout(5):
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    started = time.monotonic()
+    asyncio.run(run())
+    assert time.monotonic() - started < 5
+    if pid_file.exists() and pid_file.read_text().strip():
+        pid = int(pid_file.read_text())
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("tippecanoe is still running")
