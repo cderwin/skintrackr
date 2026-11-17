@@ -71,6 +71,8 @@ class ActivitySummary:
     moving_time: int = 0
     icu_sync_date: str = ""
     source: str = ""
+    # the activity's Strava id, once intervals.icu has matched it with one on Strava (possibly after archiving)
+    strava_id: str = ""
 
 
 @define

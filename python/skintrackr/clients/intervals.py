@@ -64,6 +64,11 @@ DEFAULT_LIMITS = (6_250, 50_000)
 BACKGROUND_SPACING = 0.2
 # wait after a 429 that has no Retry-After
 DEFAULT_RETRY_AFTER = 60.0
+# background requests that fail in transit or with a 5xx are retried this many times, waiting RETRY_DELAY seconds
+# before the first retry and twice as long before each next one
+RETRIES = 5
+RETRY_DELAY = 1.0
+HTTP_TIMEOUT = httpx.Timeout(30.0)
 
 
 def _window_start(now: datetime, length: timedelta) -> datetime:
@@ -175,7 +180,8 @@ class IntervalsClient:
         debug_dir: If set, every response body is also written here (`DEBUG_INTERVALS_RESPONSE_BODY`).
         limiter: Rate limits, shared by every client derived from this one.
         background: Requests are paced and wait for the rate limit (and retry on 429) rather than competing
-            with pages.
+            with pages, and are retried (`RETRIES` times, with exponential backoff) after network errors and 5xx
+            responses.
     """
 
     http: httpx.AsyncClient
@@ -189,7 +195,8 @@ class IntervalsClient:
         return evolve(self, api_key=api_key)
 
     def in_background(self) -> Self:
-        """A client for background work (imports, syncs): paced, and waiting out rate limits instead of failing."""
+        """A client for background work (imports, syncs): paced, waiting out rate limits and retrying transient
+        failures instead of failing."""
         return evolve(self, background=True)
 
     async def request(
@@ -212,19 +219,26 @@ class IntervalsClient:
             IntervalsError: The request failed or intervals.icu answered with a non-2xx status.
         """
         auth = httpx.BasicAuth(API_KEY_USERNAME, self.api_key) if self.api_key else None
+        retries = 0  # transient failures retried so far
         while True:
             if self.background:
                 await self.limiter.wait()
             try:
                 response = await self.http.request(method, url, params=params, headers=headers, auth=auth)
             except httpx.HTTPError as e:
+                if await self._retry(url, retries, str(e)):
+                    retries += 1
+                    continue
                 logger.error("unknown http exception", extra={"method": method, "url": url, "err": str(e)})
                 raise IntervalsError(f"http request failed: unknown error: {e}") from e
             self.limiter.update(response.headers)
-            if not (response.status_code == 429 and self.background):
+            if response.status_code == 429 and self.background:
+                logger.warning("rate limited by intervals.icu; waiting to retry", extra={"url": url})
+                self.limiter.block(response.headers.get("retry-after"))
+            elif response.status_code >= 500 and await self._retry(url, retries, f"status {response.status_code}"):
+                retries += 1
+            else:
                 break
-            logger.warning("rate limited by intervals.icu; waiting to retry", extra={"url": url})
-            self.limiter.block(response.headers.get("retry-after"))
 
         if self.debug_dir is not None:
             body_path = self.debug_dir / f".request-debug-{secrets.token_urlsafe(18)}.log"
@@ -238,6 +252,16 @@ class IntervalsClient:
             )
             raise IntervalsError(f"http request failed, invalid status {response.status_code}", response.status_code)
         return response.content
+
+    async def _retry(self, url: str, retries: int, reason: str) -> bool:
+        """Wait before retrying a transient failure (backing off exponentially); False if this isn't a background
+        request, or it has used up its `RETRIES`."""
+        if not self.background or retries >= RETRIES:
+            return False
+        seconds = RETRY_DELAY * 2**retries
+        logger.warning("intervals.icu request failed; retrying", extra={"url": url, "reason": reason, "seconds": seconds})
+        await self.limiter.sleep(seconds)
+        return True
 
     # --- athletes
 

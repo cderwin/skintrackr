@@ -92,7 +92,8 @@ They get there three ways:
 - **Sync:** every `SYNC_INTERVAL_MINUTES`, each connected athlete's activities that started in the last
   `SYNC_WINDOW_DAYS` are listed (one request) and compared with the index: new and changed ones are archived and
   indexed, and ones that are gone are removed. intervals.icu only sends webhooks to registered OAuth apps, so this
-  polling stands in for them. Changes to older activities need a Re-sync.
+  polling stands in for them. Changes to older activities need a Re-sync. An activity that still fails after the
+  retries below is logged and skipped, and the next sync tries it again.
 - **Bulk import / Re-sync** (`POST /api/import`, the button on `/`): lists every activity into the index (one
   request), so stats work within seconds, removes activities deleted on intervals.icu, then archives each one not
   yet in the bucket (two requests each). Progress is saved in `athlete:{id}:import` after every activity; imports
@@ -121,8 +122,9 @@ import records how many were left off (`map_tracks_omitted`), which the Re-sync 
 `X-RateLimit-Remaining` headers ("15-minute,daily") when responses carry them, else by counting its own requests
 against `INTERVALS_RATE_LIMIT_15MIN`/`_DAILY` (generous defaults: intervals.icu allows about 50,000 a day). Imports
 and syncs run "in the background": their requests are spaced 0.2s apart (intervals.icu also limits each IP to 10
-requests a second, unreported), wait for the next window when usage gets within 10% of a limit, and retry after a
-429 (waiting `Retry-After`). Pages never wait. Usage is kept in memory, so a restart resets the count.
+requests a second, unreported), wait for the next window when usage gets within 10% of a limit, retry after a
+429 (waiting `Retry-After`), and retry network errors and 5xx responses up to 5 times (waiting 1, 2, 4, 8 and 16s).
+Pages never wait or retry. Usage is kept in memory, so a restart resets the count.
 
 ## Migrations
 
@@ -134,6 +136,7 @@ settings from the environment and asks for confirmation unless given `--yes`.
 | --- | --- |
 | `intervals-reset` | The move to intervals.icu (2026-11): deletes everything in the bucket and every skintrackr key in Redis (keys matching `APP_KEY_PATTERNS`; other keys are left alone). Safe to re-run. |
 | `build-tracks [--athlete ID ...]` | The activity map (2026-11): writes `track.geojson.gz` for every archived activity from its streams, then builds each athlete's `tracks.pmtiles` (every connected athlete, or those given). Rewrites them all, so it's safe to re-run, e.g. after changing how tracks are simplified. Needs tippecanoe. |
+| `refresh-summaries [--athlete ID ...]` | Strava links (2026-11): rewrites each indexed activity's summary from intervals.icu's activity list where it differs, which fills in the new `strava_id` (intervals.icu matches activities with Strava's after they're archived, so the archive may lack it). One list request per athlete (every connected one, or those given); activities not yet indexed are left to imports and syncs. Safe to re-run. |
 | `legacy-layout --athlete ID [--allow-missing]` | The move from the Go server's `activities/{athlete}/metadata/{id}.json` and `tracks/{id}.gpx` to the `athletes/` layout: deletes the former once every activity is in the latter. Since intervals.icu's ids differ, use `--allow-missing` (or `intervals-reset`). |
 
 ## Layout

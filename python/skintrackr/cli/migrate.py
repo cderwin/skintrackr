@@ -8,13 +8,16 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 import click
+import httpx
 from redis.asyncio import Redis
 
 from skintrackr.clients.blob_store import BlobStore, legacy_prefix
-from skintrackr.clients.store import Store
+from skintrackr.clients.intervals import HTTP_TIMEOUT, IntervalsError
+from skintrackr.clients.store import NotFoundError, Store
 from skintrackr.config import BlobStorageConfig, Config
 from skintrackr.logging import configure_logging
-from skintrackr.server.ingest import build_tracks
+from skintrackr.server.ingest import build_tracks, refresh_summaries
+from skintrackr.server.services import build_intervals
 
 # activities whose tracks are written at once by `build-tracks`
 TRACK_CONCURRENCY = 8
@@ -128,3 +131,29 @@ def build_tracks_command(athlete_ids: tuple[str, ...]) -> None:
         tracks = _with_store(config, lambda store: build_tracks(store, blob_store, athlete_id))
         omitted = f", {tracks.omitted} older ones left off the map" if tracks.omitted else ""
         click.echo(f"{athlete_id}: {activities} archived activities, {len(tracks.included)} tracks on the map{omitted}")
+
+
+@migrate.command("refresh-summaries")
+@click.option("--athlete", "athlete_ids", multiple=True, help="Only this athlete (repeatable; default: every connected one).")
+def refresh_summaries_command(athlete_ids: tuple[str, ...]) -> None:
+    """Rewrite each indexed activity's summary from intervals.icu's activity list, where it differs.
+
+    Written for Strava links (2026-11): `strava_id` joined the index's summaries, and intervals.icu matches
+    activities with Strava's after they're archived, so it comes from the list rather than the archive. One list
+    request per athlete, paced like other background work; safe to re-run.
+    """
+    config = Config.from_env()
+
+    async def refresh(store: Store) -> None:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as http:
+            intervals = build_intervals(config, http).in_background()
+            for athlete_id in list(athlete_ids) or await store.connected_athletes():
+                try:
+                    client = intervals.with_api_key(await store.fetch_api_key(athlete_id))
+                    changed = await refresh_summaries(store, client, athlete_id)
+                except (IntervalsError, NotFoundError) as e:
+                    click.echo(f"{athlete_id}: failed: {e}")
+                    continue
+                click.echo(f"{athlete_id}: {changed} summaries rewritten")
+
+    _with_store(config, refresh)

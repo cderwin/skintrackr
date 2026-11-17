@@ -46,6 +46,8 @@ export interface ActivitySummary {
   total_elevation_gain: number
   distance: number
   moving_time: number
+  /** The activity on Strava, once intervals.icu has matched it with one; empty otherwise. */
+  strava_id: string
 }
 
 export interface MapActivities {
@@ -77,6 +79,11 @@ export const INTERVALS_SETTINGS_URL = 'https://intervals.icu/settings'
 /** An activity's page on intervals.icu. */
 export function intervalsActivityUrl(id: string): string {
   return `https://intervals.icu/activities/${encodeURIComponent(id)}`
+}
+
+/** An activity's page on Strava, from its Strava id. */
+export function stravaActivityUrl(id: string): string {
+  return `https://www.strava.com/activities/${encodeURIComponent(id)}`
 }
 
 async function call<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
