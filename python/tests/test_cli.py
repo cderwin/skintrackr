@@ -9,7 +9,18 @@ from skintrackr.cli import migrate as migrate_module
 from skintrackr.cli.main import main
 from skintrackr.clients.blob_store import archive_keys, tracks_key
 from skintrackr.models import ActivitySummary
-from tests.conftest import ACTIVITY, ATHLETE_ID, SECRET, STREAMS, FakeBucket, connect, fake_redis, with_store
+from tests.conftest import (
+    ACTIVITY,
+    ATHLETE_ID,
+    SECRET,
+    STREAMS,
+    FakeBucket,
+    FakeIntervals,
+    connect,
+    fake_redis,
+    summary,
+    with_store,
+)
 
 LEGACY_ATHLETE = "4242"
 
@@ -19,7 +30,9 @@ def test_help_lists_commands() -> None:
     assert result.exit_code == 0
     assert all(name in result.output for name in ("serve", "migrate"))
     migrations = CliRunner().invoke(main, ["migrate", "--help"])
-    assert all(name in migrations.output for name in ("legacy-layout", "intervals-reset", "build-tracks"))
+    assert all(
+        name in migrations.output for name in ("legacy-layout", "intervals-reset", "build-tracks", "refresh-summaries")
+    )
 
 
 @pytest.fixture
@@ -146,3 +159,27 @@ def test_build_tracks_backfills_tracks_and_builds_the_map(
     assert archive_keys(ATHLETE_ID, "i2").track not in reset_env.keys()
     assert reset_env.json(archive_keys(ATHLETE_ID, "i1").track)["properties"]["id"] == "i1"
     assert reset_env.read(tracks_key(ATHLETE_ID)) == b"PMTiles 1"
+
+
+# --- migrate refresh-summaries
+
+
+def test_refresh_summaries_rewrites_indexed_summaries_from_intervals(
+    reset_env: FakeBucket, redis_server: FakeServer, intervals: FakeIntervals, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(migrate_module, "build_intervals", lambda config, http: intervals.client(api_key=""))
+    connect(redis_server)
+    listed = [summary("i1", "2025-01-02", strava_id="161"), summary("i2", "2025-01-03"), summary("i3", "2025-01-04")]
+    intervals.add_activities(listed)
+    archived = [ActivitySummary(**summary(a, d)) for a, d in [("i1", "2025-01-02"), ("i2", "2025-01-03")]]
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, archived))
+
+    for rewritten in (1, 0):  # safe to re-run
+        result = CliRunner().invoke(main, ["migrate", "refresh-summaries"])
+        assert result.exit_code == 0, result.output
+        assert f"{ATHLETE_ID}: {rewritten} summaries rewritten" in result.output
+
+    index = {a.id: a for a in with_store(redis_server, lambda s: s.activities(ATHLETE_ID))}
+    assert set(index) == {"i1", "i2"}  # i3 isn't archived yet: left to imports and syncs
+    assert (index["i1"].strava_id, index["i2"].strava_id) == ("161", "")
+    assert "i0: failed" in CliRunner().invoke(main, ["migrate", "refresh-summaries", "--athlete", "i0"]).output

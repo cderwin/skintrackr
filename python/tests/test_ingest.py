@@ -9,6 +9,7 @@ import pytest
 from fakeredis import FakeServer
 
 from skintrackr.clients.blob_store import archive_keys, tracks_key
+from skintrackr.clients.intervals import IntervalsError
 from skintrackr.config import Config
 from skintrackr.models import ActivitySummary, ImportStatus, loads
 from skintrackr.server.ingest import (
@@ -181,6 +182,35 @@ def test_sync_ingests_new_and_changed_activities_and_removes_deleted_ones(
     assert rows.keys() == {"i0", "i1", "i2", "i3"}
     assert rows["i2"].name == "Renamed"
     assert archive_keys(ATHLETE_ID, "i5").streams not in bucket.keys()
+
+
+@pytest.mark.usefixtures("connected")
+def test_sync_skips_activities_that_keep_failing_and_syncs_the_rest(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    broken, linked = activity("i1", "2026-11-10"), activity("i2", "2026-11-11", strava_id="16061975123")
+    intervals.add_activities([broken, linked])
+    intervals.add("GET", "/activity/i1", status=503)
+    intervals.add_activity(linked)
+
+    asyncio.run(sync_athlete(make_services(config, intervals, bucket, redis_server), ATHLETE_ID, today=TODAY))
+
+    assert intervals.paths().count("/activity/i1") == 6  # retried five times
+    assert intervals.slept == [1.0, 2.0, 4.0, 8.0, 16.0]
+    assert set(indexed(redis_server)) == {"i2"}  # i1 isn't indexed, so the next sync tries it again
+    assert indexed(redis_server)["i2"].strava_id == "16061975123"
+    assert archive_keys(ATHLETE_ID, "i2").streams in bucket.keys()
+
+
+@pytest.mark.usefixtures("connected")
+def test_sync_stops_when_the_api_key_is_rejected(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    intervals.add_activities([activity("i1", "2026-11-10"), activity("i2", "2026-11-11")])
+    intervals.add("GET", "/activity/i2", status=401)
+    with pytest.raises(IntervalsError):
+        asyncio.run(sync_athlete(make_services(config, intervals, bucket, redis_server), ATHLETE_ID, today=TODAY))
+    assert "/activity/i1" not in intervals.paths()  # newest first: i2 failed, and nothing after it was tried
 
 
 @pytest.mark.usefixtures("connected")

@@ -1,6 +1,8 @@
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -83,11 +85,14 @@ def test_get_athlete(intervals: FakeIntervals) -> None:
 
 
 def test_list_activities(intervals: FakeIntervals) -> None:
-    intervals.add_activities([summary("i1", "2026-01-02"), summary("i2", "2025-12-31"), summary("i3", "2026-01-03")])
+    linked = summary("i3", "2026-01-03", strava_id="16061975123")
+    intervals.add_activities([summary("i1", "2026-01-02", strava_id=None), summary("i2", "2025-12-31"), linked])
     activities = asyncio.run(intervals.client().list_activities(ATHLETE_ID, date(2026, 1, 1)))
     assert [a.id for a in activities] == ["i3", "i1"]
     assert dict(intervals.requests[0].url.params) == {"oldest": "2026-01-01", "fields": SUMMARY_FIELDS}
+    assert "strava_id" in SUMMARY_FIELDS.split(",")
     assert activities[0].type == "BackcountrySki"
+    assert [a.strava_id for a in activities] == ["16061975123", ""]
 
 
 def test_get_activity(intervals: FakeIntervals) -> None:
@@ -272,6 +277,57 @@ def test_background_requests_wait_and_retry_on_429(intervals: FakeIntervals) -> 
     assert asyncio.run(client.request("GET", "https://intervals.icu/x")) == b'{"ok":1}'
     assert clock.slept == [12.0]
     assert len(intervals.requests) == 2
+
+
+def failing(*failures: httpx.Response | Exception) -> Callable[[httpx.Request], httpx.Response]:
+    """A route that fails with each of `failures` in turn (a response, or raises an exception), then succeeds."""
+    remaining = iter(failures)
+
+    def route(request: httpx.Request) -> httpx.Response:
+        failure = next(remaining, httpx.Response(200, json={"ok": 1}))
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    return route
+
+
+def test_background_requests_retry_transient_failures_with_backoff(intervals: FakeIntervals) -> None:
+    rate, clock = limiter()
+    intervals.routes[("GET", "/x")] = failing(httpx.ConnectError("reset"), httpx.Response(502), httpx.ReadTimeout("slow"))
+    client = IntervalsClient(http=intervals.http(), api_key=API_KEY, limiter=rate).in_background()
+
+    assert asyncio.run(client.request("GET", "https://intervals.icu/x")) == b'{"ok":1}'
+    assert clock.slept == [1.0, 2.0, 4.0]
+
+
+def test_background_requests_give_up_after_five_retries(intervals: FakeIntervals) -> None:
+    rate, clock = limiter()
+    intervals.routes[("GET", "/x")] = failing(*[httpx.ConnectError("down")] * 6)
+    client = IntervalsClient(http=intervals.http(), api_key=API_KEY, limiter=rate).in_background()
+
+    with pytest.raises(IntervalsError, match="down"):
+        asyncio.run(client.request("GET", "https://intervals.icu/x"))
+    assert clock.slept == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+
+@pytest.mark.parametrize("status", [400, 404])
+def test_background_requests_dont_retry_client_errors(intervals: FakeIntervals, status: int) -> None:
+    rate, clock = limiter()
+    intervals.routes[("GET", "/x")] = failing(httpx.Response(status))
+    client = IntervalsClient(http=intervals.http(), api_key=API_KEY, limiter=rate).in_background()
+
+    with pytest.raises(IntervalsError):
+        asyncio.run(client.request("GET", "https://intervals.icu/x"))
+    assert clock.slept == []
+
+
+@pytest.mark.parametrize("failure", [httpx.Response(503), httpx.ConnectError("reset")])
+def test_foreground_requests_dont_retry_transient_failures(intervals: FakeIntervals, failure: Any) -> None:
+    intervals.routes[("GET", "/x")] = failing(failure)
+    with pytest.raises(IntervalsError):
+        asyncio.run(intervals.client().request("GET", "https://intervals.icu/x"))
+    assert len(intervals.requests) == 1
 
 
 def test_foreground_requests_neither_wait_nor_retry(intervals: FakeIntervals) -> None:

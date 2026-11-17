@@ -27,13 +27,13 @@ from redis.asyncio import Redis
 
 from skintrackr.clients.blob_store import BlobStore
 from skintrackr.clients.store import Store
-from skintrackr.clients.intervals import IntervalsClient, RateLimiter
+from skintrackr.clients.intervals import HTTP_TIMEOUT
 from skintrackr.config import Config
 from skintrackr.logging import configure_logging, get_logger
 from skintrackr.server.api import api_handlers
 from skintrackr.server.connect import connect_router
 from skintrackr.server.errors import http_exception_handler, internal_error_handler
-from skintrackr.server.services import Services
+from skintrackr.server.services import Services, build_intervals
 from skintrackr.server.token_api import token_api_handlers
 from skintrackr.server.ingest import resume_imports, start_sync_loop
 
@@ -43,7 +43,6 @@ logger = get_logger(__name__)
 DEFAULT_FRONTEND_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 # Vite names bundles under assets/ by content hash, so they never change
 ASSETS_CACHE_CONTROL = CacheControlHeader(max_age=365 * 24 * 3600, public=True, immutable=True)
-HTTP_TIMEOUT = httpx.Timeout(30.0)
 
 
 @get("/healthcheck")
@@ -80,15 +79,10 @@ def create_app(
         app_config = config or Config.from_env()
         redis_client = redis or Redis.from_url(app_config.redis_url, decode_responses=True)
         http_client = http or httpx.AsyncClient(timeout=HTTP_TIMEOUT)
-        intervals = IntervalsClient(
-            http=http_client,
-            debug_dir=Path.cwd() if app_config.debug_responses else None,
-            limiter=RateLimiter(limits=app_config.rate_limits, spacing=app_config.background_spacing),
-        )
         services = Services(
             config=app_config,
             store=Store(redis=redis_client, secret=app_config.secret),
-            intervals=intervals,
+            intervals=build_intervals(app_config, http_client),
             blob_store=blob_store or BlobStore.build(app_config.blob_storage),
         )
         app.state.services = services

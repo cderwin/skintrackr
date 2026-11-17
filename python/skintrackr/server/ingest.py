@@ -6,7 +6,9 @@
   yet archived in full (two requests each). Progress is saved after every activity, and running imports resume
   at startup.
 - `run_sync_loop`: every `sync_interval`, syncs each connected athlete's activities that started within the
-  `sync_window`: new and changed ones are ingested, deleted ones removed. Older changes need a Re-sync.
+  `sync_window`: new and changed ones are ingested, deleted ones removed. Older changes need a Re-sync. An
+  activity that fails to ingest (after the background client's retries) is skipped, and retried by the next sync.
+- `refresh_summaries`: rewrites indexed summaries from intervals.icu's list (`migrate refresh-summaries`).
 - `remove_activity` / `remove_athlete`: deleted activities, and disconnecting.
 - `schedule_tracks` / `build_tracks`: the athlete's map tracks (`tracks.pmtiles`), rebuilt in the background
   after their activities change, at most every `tracks_debounce`, from the `MAP_TRACKS_LIMIT` most recent tracks.
@@ -17,6 +19,8 @@ are skipped.
 
 import asyncio
 from datetime import UTC, date, datetime
+
+from botocore.exceptions import ClientError
 
 from skintrackr.clients.blob_store import BlobStore, tracks_key
 from skintrackr.clients.intervals import UNAVAILABLE_SOURCES, IntervalsClient, IntervalsError
@@ -205,12 +209,13 @@ async def run_tracks(services: Services, athlete_id: str) -> None:
 async def sync_athlete(services: Services, athlete_id: str, today: date | None = None) -> None:
     """Sync an athlete's activities that started within the sync window (see the module docstring).
 
-    Skipped while the athlete's import is running: it covers everything.
+    Skipped while the athlete's import is running: it covers everything. Activities that fail to ingest are
+    logged and skipped.
 
     Raises:
         NotFoundError: The athlete isn't connected.
-        IntervalsError: Listing or fetching activities failed.
-        botocore.exceptions.ClientError: Archiving failed.
+        IntervalsError: Listing activities failed, or intervals.icu rejected the API key.
+        botocore.exceptions.ClientError: Removing a deleted activity failed.
     """
     if services.is_running(_import_task(athlete_id)):
         return
@@ -224,12 +229,40 @@ async def sync_athlete(services: Services, athlete_id: str, today: date | None =
     }
     changed = [activity_id for activity_id, summary in listed.items() if indexed.get(activity_id) != summary]
     deleted = indexed.keys() - listed.keys()
+    failed = 0
     for activity_id in changed:
-        await ingest_activity(services, intervals, athlete_id, activity_id)
+        try:
+            await ingest_activity(services, intervals, athlete_id, activity_id)
+        except (IntervalsError, ClientError) as e:
+            if isinstance(e, IntervalsError) and e.unauthorized:
+                raise
+            # its index row is unchanged, so the next sync tries it again
+            failed += 1
+            logger.error("error syncing activity; skipped", exc_info=e, extra={"athlete_id": athlete_id, "activity_id": activity_id})
     for activity_id in deleted:
         await remove_activity(services, athlete_id, activity_id)
     if changed or deleted:
-        logger.info("synced activities", extra={"athlete_id": athlete_id, "ingested": len(changed), "removed": len(deleted)})
+        logger.info(
+            "synced activities",
+            extra={"athlete_id": athlete_id, "ingested": len(changed) - failed, "failed": failed, "removed": len(deleted)},
+        )
+
+
+async def refresh_summaries(store: Store, intervals: IntervalsClient, athlete_id: str) -> int:
+    """Rewrite the summaries of an athlete's indexed activities that differ from intervals.icu's list (e.g. after
+    `ActivitySummary` gains a field); returns how many were rewritten.
+
+    Activities missing from the index are left to imports and syncs, which archive them: a summary indexed
+    without its archive would look up to date to the sync.
+
+    Raises:
+        IntervalsError: Listing activities failed.
+    """
+    indexed = {activity.id: activity for activity in await store.activities(athlete_id)}
+    listed = await intervals.list_activities(athlete_id, EPOCH)
+    changed = [summary for summary in listed if summary.id in indexed and indexed[summary.id] != summary]
+    await store.save_activities(athlete_id, changed)
+    return len(changed)
 
 
 async def sync_all(services: Services) -> None:

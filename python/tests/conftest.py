@@ -85,13 +85,18 @@ def basic_auth_key(request: httpx.Request) -> str | None:
 class FakeIntervals:
     """A fake intervals.icu API: canned responses by method and path, and a record of every request.
 
-    Requests with an API key other than `keys` get 401, like intervals.icu.
+    Requests with an API key other than `keys` get 401, like intervals.icu. Its clients' waits (rate limits,
+    retries) return at once, and are recorded in `slept`.
     """
 
     def __init__(self) -> None:
         self.routes: dict[tuple[str, str], Route] = {}
         self.requests: list[httpx.Request] = []
         self.keys = {API_KEY}
+        self.slept: list[float] = []
+
+    async def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
 
     def add(self, method: str, path: str, body: Any = None, status: int = 200) -> None:
         """Answer `method path` (under /api/v1) with `body` as JSON."""
@@ -128,7 +133,7 @@ class FakeIntervals:
 
     def client(self, api_key: str = API_KEY) -> IntervalsClient:
         """An IntervalsClient sending requests to this fake."""
-        return IntervalsClient(http=self.http(), api_key=api_key, limiter=RateLimiter(spacing=0))
+        return IntervalsClient(http=self.http(), api_key=api_key, limiter=RateLimiter(spacing=0, sleep=self.sleep))
 
     def last(self, method: str, path: str) -> httpx.Request:
         """The last request to `method path` (under /api/v1)."""

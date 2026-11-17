@@ -2,14 +2,16 @@
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any
 
+import httpx
 from attrs import define, field
 from litestar.datastructures import State
 
 from skintrackr.clients.blob_store import BlobStore
 from skintrackr.clients.store import Store
-from skintrackr.clients.intervals import IntervalsClient
+from skintrackr.clients.intervals import IntervalsClient, RateLimiter
 from skintrackr.config import Config
 from skintrackr.logging import get_logger
 
@@ -72,6 +74,15 @@ class Services:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def build_intervals(config: Config, http: httpx.AsyncClient) -> IntervalsClient:
+    """The intervals.icu client (without an API key) for `config`'s rate limits and debugging settings."""
+    return IntervalsClient(
+        http=http,
+        debug_dir=Path.cwd() if config.debug_responses else None,
+        limiter=RateLimiter(limits=config.rate_limits, spacing=config.background_spacing),
+    )
 
 
 def get_services(state: State) -> Services:
