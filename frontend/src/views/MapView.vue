@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// A full-page 3D terrain map (MapTiler Outdoor and terrain-RGB DEM), centered on the Washington Cascades, with the
-// athlete's activity tracks (their PMTiles archive) colored by sport. Clicking a track opens its details; the
-// filter panel narrows tracks by sport and date.
+// A full-page 3D terrain map (MapTiler Outdoor, or satellite imagery, on a terrain-RGB DEM), centered on the
+// Washington Cascades, with the athlete's activity tracks (their PMTiles archive) colored by sport. Clicking a track
+// opens its details; the filter panel narrows tracks by sport and date.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
@@ -31,6 +31,9 @@ const CANDIDATE_SLOP = 96
 const ROUTES_LAYER = 'trail'
 const MUTED_ROUTE = 'hsl(24, 10%, 60%)'
 const MUTED_ROUTE_LABEL = 'hsl(24, 10%, 40%)'
+// MapTiler satellite imagery, drawn over the topo map's base (landcover and hillshade) but under its lines (contours,
+// roads, trails), water, labels and the tracks
+const SATELLITE = 'satellite'
 
 maplibregl.setWorkerUrl(workerUrl)
 const pmtiles = new Protocol()
@@ -79,7 +82,12 @@ onMounted(() => {
     })
     map?.setTerrain({ source: 'terrain', exaggeration: 1 })
     map?.addControl(new maplibregl.TerrainControl({ source: 'terrain' }), 'bottom-right')
-    if (map) muteRoutes(map)
+    // bottom controls stack upwards, so this sits above the terrain button
+    map?.addControl(satelliteControl, 'bottom-right')
+    if (map) {
+      muteRoutes(map)
+      addSatellite(map)
+    }
     resolveMapLoaded()
   })
   window.addEventListener('keydown', closeOnEscape)
@@ -88,6 +96,45 @@ onMounted(() => {
 function closeOnEscape(event: KeyboardEvent): void {
   if (event.key === 'Escape') popup?.remove()
 }
+
+// a button in MapLibre's own control style (like the terrain button) that toggles satellite imagery
+const satelliteButton = document.createElement('button')
+satelliteButton.type = 'button'
+satelliteButton.className = 'satellite-toggle'
+satelliteButton.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>'
+satelliteButton.addEventListener('click', () => (settings.satellite = !settings.satellite))
+const satelliteControl: maplibregl.IControl = {
+  onAdd: () => {
+    const group = document.createElement('div')
+    group.className = 'maplibregl-ctrl maplibregl-ctrl-group'
+    group.append(satelliteButton)
+    return group
+  },
+  onRemove: () => satelliteButton.parentElement?.remove(),
+}
+
+function addSatellite(m: maplibregl.Map): void {
+  m.addSource(SATELLITE, {
+    type: 'raster',
+    url: `https://api.maptiler.com/tiles/satellite-v2/tiles.json?key=${MAPTILER_KEY}`,
+    tileSize: 512,
+  })
+  const base = ['background', 'fill', 'hillshade']
+  const firstOverlay = m.getStyle().layers.find((layer) => !base.includes(layer.type))?.id
+  m.addLayer({ id: SATELLITE, type: 'raster', source: SATELLITE }, firstOverlay)
+  showBaseLayer()
+}
+
+function showBaseLayer(): void {
+  const on = settings.satellite
+  satelliteButton.classList.toggle('satellite-enabled', on)
+  satelliteButton.title = on ? 'Show topo map' : 'Show satellite imagery'
+  satelliteButton.setAttribute('aria-pressed', String(on))
+  // a hidden layer's tiles aren't fetched
+  if (map?.getLayer(SATELLITE)) map.setLayoutProperty(SATELLITE, 'visibility', on ? 'visible' : 'none')
+}
+
+watch(() => settings.satellite, showBaseLayer)
 
 function muteRoutes(m: maplibregl.Map): void {
   for (const layer of m.getStyle().layers) {
@@ -275,6 +322,15 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-size: 18px;
   line-height: 24px;
+}
+
+/* the satellite toggle's icon, in the terrain button's colors (grey, blue when on) */
+.map :deep(.satellite-toggle .maplibregl-ctrl-icon) {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%23333' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
+}
+
+.map :deep(.satellite-toggle.satellite-enabled .maplibregl-ctrl-icon) {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
 }
 
 .map :deep(.maplibregl-popup-close-button:hover) {

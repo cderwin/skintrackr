@@ -1,4 +1,4 @@
-// The viewer's settings (vert goal, units, map filters), kept in localStorage: per browser, and optional.
+// The viewer's settings (vert goal, units, map filters and base layer), kept in localStorage: per browser, and optional.
 import { reactive, watch } from 'vue'
 
 export type Units = 'ft' | 'm'
@@ -24,6 +24,8 @@ interface Settings {
   goalM: number
   units: Units
   mapFilters: MapFilters
+  /** Whether the map shows satellite imagery rather than the topo map. */
+  satellite: boolean
   /** How many activities were off the map (over its limit) when its warning was dismissed. */
   mapLimitDismissed: number
 }
@@ -32,6 +34,7 @@ const DEFAULTS: Settings = {
   goalM: 500_000 * METERS_PER_FOOT,
   units: 'ft',
   mapFilters: { sports: [], period: 'all', from: '', to: '' },
+  satellite: false,
   mapLimitDismissed: 0,
 }
 
@@ -56,6 +59,7 @@ function load(): Settings {
       goalM: typeof saved.goalM === 'number' && saved.goalM > 0 ? saved.goalM : DEFAULTS.goalM,
       units: saved.units === 'm' ? 'm' : DEFAULTS.units,
       mapFilters: loadMapFilters(saved.mapFilters),
+      satellite: saved.satellite === true,
       mapLimitDismissed:
         typeof saved.mapLimitDismissed === 'number' && saved.mapLimitDismissed > 0 ? saved.mapLimitDismissed : 0,
     }
