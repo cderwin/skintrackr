@@ -103,6 +103,15 @@ def test_export(client: TestClient, intervals: FakeIntervals, redis_server: Fake
     assert basic_auth_key(intervals.requests[0]) == API_KEY
 
 
+def test_export_with_session_cookie(client: TestClient, intervals: FakeIntervals, redis_server: FakeServer) -> None:
+    # the map popup's download link sends the browser's session cookie, not a bearer token
+    intervals.add_activity()
+    connect(redis_server)
+    response = client.get(EXPORT, headers=session(issue_api_token(redis_server)))
+    assert response.status_code == 200
+    assert b"<name>Morning Skin</name>" in response.content
+
+
 def test_export_activity_not_found(client: TestClient, redis_server: FakeServer) -> None:
     connect(redis_server)
     response = client.get("/api/activity/i999/export", headers=bearer(issue_api_token(redis_server)))
