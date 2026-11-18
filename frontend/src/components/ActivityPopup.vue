@@ -2,7 +2,7 @@
 // A clicked track's details, inside the map's popup. Where tracks overlap, the others under the click are listed
 // below (the newest `LIMIT`, with a count of the rest), to switch between them.
 import { computed } from 'vue'
-import { intervalsActivityUrl, stravaActivityUrl, type ActivitySummary } from '@/api'
+import { gpxExportUrl, intervalsActivityUrl, stravaActivityUrl, type ActivitySummary } from '@/api'
 import { formatDistance, formatVert } from '@/settings'
 import { sportColor, sportLabel } from '@/sports'
 
@@ -49,10 +49,9 @@ function formatDate(value: string): string {
       <dd>{{ formatVert(activity.total_elevation_gain) }}</dd>
     </dl>
     <div class="links">
-      <a :href="intervalsActivityUrl(activity.id)" target="_blank" rel="noopener noreferrer">Open in intervals.icu ↗</a>
-      <a v-if="activity.strava_id" :href="stravaActivityUrl(activity.strava_id)" target="_blank" rel="noopener noreferrer">
-        View on Strava ↗
-      </a>
+      <a :href="gpxExportUrl(activity.id)" download>GPX ↓</a>
+      <a :href="intervalsActivityUrl(activity.id)" target="_blank" rel="noopener noreferrer">intervals.icu ↗</a>
+      <a v-if="activity.strava_id" :href="stravaActivityUrl(activity.strava_id)" target="_blank" rel="noopener noreferrer">Strava ↗</a>
     </div>
 
     <div v-if="activities.length > 1" class="others">
