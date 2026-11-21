@@ -107,6 +107,11 @@ dev-up: compose-up
     @echo "Redis is available at localhost:6379, SeaweedFS (S3) at localhost:8333"
     @echo "View logs with: just compose-logs"
 
+# The stack, rebuilding the app on frontend or server changes (Compose 2.22+; Ctrl-C stops watching)
+[group('docker')]
+dev-watch:
+    docker compose watch
+
 [group('docker')]
 dev-down: compose-down
     @echo "Stack stopped"
