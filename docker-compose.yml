@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   redis:
     image: redis:7-alpine
@@ -72,6 +70,21 @@ services:
       seaweedfs-init:
         condition: service_completed_successfully
     restart: unless-stopped
+    # `docker compose watch` (`just dev-watch`; Compose 2.22+): rebuild and restart the app whenever the frontend or
+    # server changes. The paths match what .dockerignore lets into the build.
+    develop:
+      watch:
+        - action: rebuild
+          path: ./frontend
+          ignore:
+            - node_modules/
+            - dist/
+        - action: rebuild
+          path: ./python/skintrackr
+        - action: rebuild
+          path: ./python/pyproject.toml
+        - action: rebuild
+          path: ./python/uv.lock
 
 volumes:
   redis-data:

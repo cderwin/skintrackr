@@ -177,6 +177,7 @@ just test          # all tests (py-test: uv run pytest)
 just check         # all static checks (py-check: uv run ty check)
 just build         # build the production Docker image
 just dev-up        # docker compose: app + Redis + SeaweedFS on http://localhost:8080
+just dev-watch     # the same, rebuilding the app on frontend/server changes (Compose 2.22+)
 just compose-logs  # follow logs
 just dev-down      # stop the stack
 just compose-restart  # restart just the app
