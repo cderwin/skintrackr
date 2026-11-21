@@ -135,6 +135,9 @@ class SportStyle:
 class TrackExportRequest:
     """An export of the tracks in an area (and its preview, which reads only the area and the filters).
 
+    The export holds the chosen `activity_ids` when they're given (from the preview, ticked in the export dialog),
+    else the tracks the area and filters find.
+
     Attributes:
         bbox: The area, `[west, south, east, north]` in degrees.
         sports: Activity types to export (the map's sport filter); empty exports every type.
@@ -145,6 +148,7 @@ class TrackExportRequest:
         units: `ft` or `m`, for the descriptions.
         styles: Each activity type's label and color.
         stroke_width: The lines' width, in pixels.
+        activity_ids: The tracks to export, in place of the filters' search; None searches.
     """
 
     bbox: list[float] = field(factory=list)
@@ -156,6 +160,7 @@ class TrackExportRequest:
     units: str = "m"
     styles: dict[str, SportStyle] = field(factory=dict)
     stroke_width: int = 3
+    activity_ids: list[str] | None = None
 
 
 @define

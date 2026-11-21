@@ -204,6 +204,8 @@ async def _export_request(request: Request) -> tuple[TrackExportRequest, BBox]:
         raise ClientException("invalid export request")
     if not 1 <= export.stroke_width <= MAX_STROKE_WIDTH:
         raise ClientException("invalid export request")
+    if export.activity_ids is not None:
+        export.activity_ids = list(dict.fromkeys(export.activity_ids))
     return export, bbox
 
 
@@ -235,7 +237,8 @@ async def export_preview(request: Request, state: State) -> dict[str, Any]:
 
 @post("/api/activities/export", status_code=200)
 async def export_tracks(request: Request, state: State) -> Response[bytes]:
-    """Download the full-detail tracks in an area as a CalTopo GeoJSON file (`X-Track-Count`: how many)."""
+    """Download the full-detail tracks in an area (or the chosen ones, `activity_ids`) as a CalTopo GeoJSON file
+    (`X-Track-Count`: how many)."""
     services = get_services(state)
     info = await authenticate_request(request, services)
     export, bbox = await _export_request(request)
@@ -243,14 +246,16 @@ async def export_tracks(request: Request, state: State) -> Response[bytes]:
     started = time.monotonic()
 
     with fail_with("failed to find tracks", **context):
-        ids = await export_candidates(services, info.athlete_id, export, bbox)
+        # chosen ids need no ownership check: they're looked up in the athlete's own index and archive
+        ids = export.activity_ids
+        if ids is None:
+            ids = await export_candidates(services, info.athlete_id, export, bbox)
         index = {a.id: a for a in await services.store.activities(info.athlete_id)}
     if not ids:
         raise ClientException(NO_TRACKS)
     if len(ids) > EXPORT_TRACKS_LIMIT:
-        raise ClientException(
-            f"{len(ids)} tracks: exports are limited to {EXPORT_TRACKS_LIMIT}. Narrow the area or the map's filters."
-        )
+        narrow = "Choose fewer tracks." if export.activity_ids is not None else "Narrow the area or the map's filters."
+        raise ClientException(f"{len(ids)} tracks: exports are limited to {EXPORT_TRACKS_LIMIT}. {narrow}")
 
     slots = asyncio.Semaphore(EXPORT_READ_CONCURRENCY)
     points = 0

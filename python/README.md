@@ -64,7 +64,7 @@ settings fail at startup (`ConfigError`).
 | `GET /api/activities` | bearer | For the map: `{"activities": [ActivitySummary, ...] (in no particular order), "on_map": [id, ...] (the ids in its tracks, newest first), "map_tracks_omitted"}` |
 | `GET /api/tracks.pmtiles` | bearer | The athlete's map tracks (PMTiles), whole or by HTTP `Range` (206), with an `ETag`; 404 before the first build |
 | `POST /api/activities/export/preview` | bearer | `{"bbox": [w, s, e, n], "sports", "date_from", "date_to"}` (the map's filters): the map tracks that meet the area, `{"activity_ids": [...] (newest first), "limit"}` |
-| `POST /api/activities/export` | bearer | The same, plus `"mode": "whole"\|"clip"`, `"folder"`, `"units"`, `"styles": {type: {"label", "color"}}` and `"stroke_width"`: the tracks at full detail as a CalTopo GeoJSON download (`X-Track-Count`; see [CalTopo exports](#caltopo-exports)). 400 for an empty area, over 100 tracks or over 1M points |
+| `POST /api/activities/export` | bearer | The same, plus `"mode": "whole"\|"clip"`, `"folder"`, `"units"`, `"styles": {type: {"label", "color"}}` and `"stroke_width"`, and optionally `"activity_ids"` (chosen from the preview; they replace the filters' search): the tracks at full detail as a CalTopo GeoJSON download (`X-Track-Count`; see [CalTopo exports](#caltopo-exports)). 400 for an empty area, over 100 tracks or over 1M points |
 | `GET /api/stats/vert?today=YYYY-MM-DD` | bearer | On-foot vert from Jan 1 to today's date, this year and the 5 before, from the activity index: `{"as_of", "activities", "years": [{"year", "vert_m"}, ...]}` |
 
 "bearer" routes take the API token as `Authorization: Bearer <token>` (from `/token/new`) or, when there's no

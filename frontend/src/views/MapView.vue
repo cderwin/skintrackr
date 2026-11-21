@@ -51,10 +51,12 @@ const candidates = ref<ActivitySummary[]>([])
 const selectedId = ref('')
 // the popup's content is rendered by Vue, teleported into MapLibre's popup
 const popupContent = document.createElement('div')
-// area mode (drawing an area, then its export dialog): the area drawn, and the tracks the export would hold
+// area mode (drawing an area, then its export dialog): the area drawn, the tracks ticked for export, and the one
+// hovered in the dialog's list
 const areaMode = ref(false)
 const area = ref<BBox | null>(null)
 const exportIds = ref<string[]>([])
+const focusId = ref<string | null>(null)
 const filtersOpen = ref(false)
 // after a download: how many tracks, for the import instructions shown briefly
 const downloaded = ref(0)
@@ -134,6 +136,7 @@ function startArea(): void {
   downloaded.value = 0
   area.value = null
   exportIds.value = []
+  focusId.value = null
   areaMode.value = true
   areaSelect?.start()
 }
@@ -143,6 +146,7 @@ function endArea(): void {
   areaMode.value = false
   area.value = null
   exportIds.value = []
+  focusId.value = null
 }
 
 function onDownloaded(count: number): void {
@@ -152,7 +156,7 @@ function onDownloaded(count: number): void {
   downloadedTimer = setTimeout(() => (downloaded.value = 0), 12_000)
 }
 
-watch(exportIds, applyFilters)
+watch([exportIds, focusId], applyFilters)
 
 function addSatellite(m: maplibregl.Map): void {
   m.addSource(SATELLITE, {
@@ -290,8 +294,9 @@ function applyFilters(): void {
   if (!map?.getLayer(HIT_LAYER)) return
   const filter = filterExpression(settings.mapFilters)
   for (const id of [HIT_LAYER, 'tracks-casing', 'tracks']) map.setFilter(id, filter)
-  // highlighted: the export's tracks while its dialog is open, else the popup's
-  const ids = area.value ? exportIds.value : [selectedId.value]
+  // highlighted: the export's ticked tracks while its dialog is open (just the one hovered in its list), else the
+  // popup's
+  const ids = area.value ? (focusId.value ? [focusId.value] : exportIds.value) : [selectedId.value]
   const selected: maplibregl.FilterSpecification = ['all', filter, ['in', ['get', 'id'], ['literal', ids]]]
   for (const id of ['tracks-selected-casing', 'tracks-selected']) map.setFilter(id, selected)
 }
@@ -372,7 +377,9 @@ onBeforeUnmount(() => {
       :bbox="area"
       :types="mapTypes"
       :omitted="data.map_tracks_omitted"
+      :activities="byId"
       @preview="exportIds = $event"
+      @focus="focusId = $event"
       @redraw="startArea"
       @close="endArea"
       @downloaded="onDownloaded"

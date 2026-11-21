@@ -129,3 +129,14 @@ export function formatDistance(meters: number): string {
   const value = meters / (imperial ? METERS_PER_MILE : 1000)
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} ${imperial ? 'mi' : 'km'}`
 }
+
+/** A local start (`YYYY-MM-DDTHH:MM:SS`) as a date in the browser's locale, e.g. "Jan 10, 2025". */
+export function formatDate(value: string): string {
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
+  if (!year || !month || !day) return ''
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}

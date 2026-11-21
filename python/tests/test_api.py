@@ -413,6 +413,42 @@ def test_export_area_refused(
     assert (response.status_code, response.json()) == (400, {"message": message})
 
 
+@requires_tippecanoe
+def test_export_area_chosen_tracks(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    archive_tours(bucket, redis_server)
+    # the filters are ignored, duplicates collapse, and another athlete's (or a deleted) activity is skipped
+    body = export_body(sports=["BackcountrySki"], activity_ids=["i3", "i1", "i3", "someone-elses"])
+    response = client.post(EXPORT_AREA, json=body, headers=bearer(issue_api_token(redis_server)))
+
+    assert (response.status_code, response.headers["x-track-count"]) == (200, "2")
+    _, *lines = response.json()["features"]
+    assert [line["properties"]["title"] for line in lines] == ["2025-01-10 Tour i1", "2025-03-01 Tour i3"]
+
+
+@requires_tippecanoe
+@pytest.mark.parametrize(
+    ("ids", "message"),
+    [
+        (["i1", "i2", "i3"], "3 tracks: exports are limited to 2. Choose fewer tracks."),
+        (["i1", "i1", "i1"], None),  # one track, once
+        ([], "No tracks in this area match the map's filters."),
+        (["someone-elses"], "No tracks in this area match the map's filters."),
+        (["i4"], "No tracks in this area match the map's filters."),  # outside the area
+    ],
+)
+def test_export_area_chosen_tracks_refused(
+    client: TestClient, bucket: FakeBucket, redis_server: FakeServer, monkeypatch: pytest.MonkeyPatch,
+    ids: list[str], message: str | None,
+) -> None:
+    archive_tours(bucket, redis_server)
+    monkeypatch.setattr("skintrackr.server.api.EXPORT_TRACKS_LIMIT", 2)
+    response = client.post(EXPORT_AREA, json=export_body(activity_ids=ids), headers=bearer(issue_api_token(redis_server)))
+    if message is None:
+        assert (response.status_code, response.headers["x-track-count"]) == (200, "1")
+    else:
+        assert (response.status_code, response.json()) == (400, {"message": message})
+
+
 @pytest.mark.parametrize("path", [PREVIEW, EXPORT_AREA])
 @pytest.mark.parametrize(
     ("body", "message"),

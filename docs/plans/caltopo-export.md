@@ -437,6 +437,8 @@ Each phase is one commit, and all of them go in one PR to `main`. Before opening
 
 Where the code differs from the plan above:
 
+- The dialog lists the area's tracks to tick, and the export takes the ticked ids: see `docs/plans/caltopo-track-selection.md`.
+
 - **Commits**: two, the server (phases 1–4) and the frontend (5–6), not one per phase.
 - **Test archives**: tests build real archives with tippecanoe (`tracks_archive` in `tests/conftest.py`, skipped
   where tippecanoe isn't installed; CI installs it), rather than a checked-in `tracks.pmtiles`. This also tests

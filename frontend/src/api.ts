@@ -78,6 +78,8 @@ export interface TrackExportRequest {
   /** Each activity type's label and color (`sportStyles`). */
   styles: Record<string, { label: string; color: string }>
   stroke_width: number
+  /** The tracks to export (ticked in the dialog), in place of the filters' search. */
+  activity_ids?: string[]
 }
 
 export interface ExportPreview {
