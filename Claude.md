@@ -88,51 +88,35 @@ the Dockerfile and CI build it).
 
 ## Git Workflow & Best Practices
 
-### Branch Strategy (Gitflow)
+### Branch Strategy (GitHub flow)
 
-1. **Main Branches**
-   - `main` - Production-ready code
-   - `develop` - Integration branch for features
+Follow [GitHub flow](https://docs.github.com/en/get-started/using-github/github-flow): `main` is the only
+long-lived branch, and it's always deployable, since every merge to `main` deploys to production. All work
+happens on short-lived branches made from `main` and merged back into it through a pull request. There is no
+`develop`, `release/*` or `hotfix/*` branch: an urgent fix is just a small branch and a quick PR.
 
-2. **Supporting Branches**
-   - `feature/*` - New features (branch from `develop`)
-   - `bugfix/*` - Bug fixes (branch from `develop`)
-   - `hotfix/*` - Urgent production fixes (branch from `main`)
-   - `release/*` - Release preparation (branch from `develop`)
+Name branches by kind, with a short description: `feature/*` for new features, `bugfix/*` for fixes, and
+`chore/*`, `docs/*` or `refactor/*` for other changes.
 
 ### Workflow Steps
 
-#### For New Features
 ```bash
-# 1. Create feature branch from develop
-git checkout develop
-git pull origin develop
+# 1. Branch from an up-to-date main
+git checkout main
+git pull origin main
 git checkout -b feature/descriptive-name
 
-# 2. Work on feature, commit regularly
-git add .
+# 2. Work in small commits with descriptive messages
+git add <files>
 git commit -m "feat: descriptive commit message"
 
-# 3. Push and create PR
+# 3. Push and open a PR into main (early, as a draft, if you want feedback)
 git push -u origin feature/descriptive-name
-# Then create PR to merge into develop
-```
+gh pr create --base main
 
-#### For Bug Fixes
-```bash
-# Branch from develop
-git checkout -b bugfix/fix-description
+# 4. Address review comments with more commits on the same branch; CI runs on every push
 
-# Work, commit, push, create PR to develop
-```
-
-#### For Hotfixes
-```bash
-# Branch from main for urgent production fixes
-git checkout main
-git checkout -b hotfix/critical-issue
-
-# Fix, commit, push, create PR to BOTH main and develop
+# 5. Once approved and green, merge the PR (this deploys) and delete the branch
 ```
 
 ### Commit Message Convention
@@ -148,7 +132,7 @@ Follow conventional commits:
 
 ### Pull Request Process
 
-**ALWAYS create PRs instead of pushing directly to main/develop**
+**ALWAYS create PRs instead of pushing directly to main**
 
 1. **Before Creating PR**
    ```bash
@@ -360,4 +344,4 @@ Note: every unmatched GET path serves the landing page (SPA fallback), so a new 
 
 ---
 
-**Remember**: Write compact, organized code that reuses what already exists and stays consistent with the surrounding style — never duplicate logic. Maintain separation of concerns (intervals.icu API in `clients/intervals.py`, Redis in `clients/store.py`, blob storage in `clients/blob_store.py`, auth/crypto in `server/auth.py`/`crypto.py`), run `just test` and `just check` before creating PRs, and follow gitflow with PRs for all changes.
+**Remember**: Write compact, organized code that reuses what already exists and stays consistent with the surrounding style — never duplicate logic. Maintain separation of concerns (intervals.icu API in `clients/intervals.py`, Redis in `clients/store.py`, blob storage in `clients/blob_store.py`, auth/crypto in `server/auth.py`/`crypto.py`), run `just test` and `just check` before creating PRs, and follow GitHub flow (branch from `main`, merge back by PR) for all changes.

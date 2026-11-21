@@ -12,3 +12,9 @@ htmlcov/
 .request-debug-*.log
 
 .claude/
+
+# macOS Finder metadata
+.DS_Store
+
+# Real CalTopo exports and import test files (personal tracks)
+caltopo_examples/
