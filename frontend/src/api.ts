@@ -118,6 +118,11 @@ export function intervalsActivityUrl(id: string): string {
   return `https://intervals.icu/activities/${encodeURIComponent(id)}`
 }
 
+/** An activity's GPX download (the server's export, authenticated by the session cookie). */
+export function gpxExportUrl(id: string): string {
+  return `/api/activity/${encodeURIComponent(id)}/export`
+}
+
 /** An activity's page on Strava, from its Strava id. */
 export function stravaActivityUrl(id: string): string {
   return `https://www.strava.com/activities/${encodeURIComponent(id)}`
