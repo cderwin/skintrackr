@@ -11,9 +11,13 @@ dependencies = [
     "click>=8.5.1",
     "httpx>=0.28.1",
     "litestar[standard]>=2.25.0",
+    "mapbox-vector-tile>=2.2.0",
+    "numpy>=2.5.5",
+    "pmtiles>=3.8.1",
     "pyjwt>=2.15.1",
     "pynacl>=1.6.2",
     "redis>=8.1.0",
+    "shapely>=2.2.0",
 ]
 
 [project.scripts]

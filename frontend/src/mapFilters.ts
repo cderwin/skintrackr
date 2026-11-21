@@ -1,8 +1,9 @@
 // The map's filters: one date range and sport test, applied to the tracks (a MapLibre filter) and to the
 // activity list (the panel's counts), so the two always agree.
 import type { ExpressionSpecification } from 'maplibre-gl'
-import type { ActivitySummary } from '@/api'
+import type { ActivitySummary, TrackExportRequest } from '@/api'
 import type { MapFilters } from '@/settings'
+import { sportLabel } from '@/sports'
 
 const OPEN_END = 99_999_999
 
@@ -54,4 +55,26 @@ export function filterExpression(filters: MapFilters, today = new Date()): Expre
 /** Whether any filter narrows the map. */
 export function isFiltered(filters: MapFilters): boolean {
   return filters.sports.length > 0 || filters.period !== 'all'
+}
+
+/** The filters as an export request's, so an export takes exactly the tracks the map shows. */
+export function exportFilters(
+  filters: MapFilters,
+  today = new Date(),
+): Pick<TrackExportRequest, 'sports' | 'date_from' | 'date_to'> {
+  const [from, to] = dateRange(filters, today)
+  return { sports: [...filters.sports], date_from: from, date_to: to }
+}
+
+/** The filters in words, e.g. "Backcountry ski · 2025"; empty if nothing is filtered. */
+export function describeFilters(filters: MapFilters): string {
+  const period =
+    filters.period === 'all'
+      ? ''
+      : filters.period === 'last12'
+        ? 'Last 12 months'
+        : filters.period === 'custom'
+          ? `${filters.from || '…'} – ${filters.to || '…'}`
+          : filters.period
+  return [...filters.sports.map(sportLabel), period].filter(Boolean).join(' · ')
 }

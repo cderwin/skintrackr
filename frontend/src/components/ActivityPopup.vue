@@ -3,7 +3,7 @@
 // below (the newest `LIMIT`, with a count of the rest), to switch between them.
 import { computed } from 'vue'
 import { gpxExportUrl, intervalsActivityUrl, stravaActivityUrl, type ActivitySummary } from '@/api'
-import { formatDistance, formatVert } from '@/settings'
+import { formatDate, formatDistance, formatVert } from '@/settings'
 import { sportColor, sportLabel } from '@/sports'
 
 // activities listed where tracks overlap
@@ -23,16 +23,6 @@ const count = computed(() =>
     ? `${LIMIT} of ${props.activities.length} activities here · zoom in to see the rest`
     : `${props.activities.length} activities here`,
 )
-
-function formatDate(value: string): string {
-  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
-  if (!year || !month || !day) return ''
-  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-  })
-}
 </script>
 
 <template>

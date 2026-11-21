@@ -121,3 +121,51 @@ class StreamPoint:
     distance: float = 0.0
     heart_rate: float = 0.0
     temperature: float = 0.0
+
+
+@define
+class SportStyle:
+    """How the map draws an activity type: its label and color (`#RRGGBB`), from the browser's sport table."""
+
+    label: str = ""
+    color: str = ""
+
+
+@define
+class TrackExportRequest:
+    """An export of the tracks in an area (and its preview, which reads only the area and the filters).
+
+    The export holds the chosen `activity_ids` when they're given (from the preview, ticked in the export dialog),
+    else the tracks the area and filters find.
+
+    Attributes:
+        bbox: The area, `[west, south, east, north]` in degrees.
+        sports: Activity types to export (the map's sport filter); empty exports every type.
+        date_from: First local start date (`YYYYMMDD`), inclusive (the map's date filter).
+        date_to: Last local start date (`YYYYMMDD`), inclusive.
+        mode: `whole` exports every track that meets the area in full; `clip` exports the pieces inside it.
+        folder: The CalTopo folder to put the tracks in; None (or blank) for none.
+        units: `ft` or `m`, for the descriptions.
+        styles: Each activity type's label and color.
+        stroke_width: The lines' width, in pixels.
+        activity_ids: The tracks to export, in place of the filters' search; None searches.
+    """
+
+    bbox: list[float] = field(factory=list)
+    sports: list[str] = field(factory=list)
+    date_from: int = 0
+    date_to: int = 99_991_231
+    mode: str = "whole"
+    folder: str | None = None
+    units: str = "m"
+    styles: dict[str, SportStyle] = field(factory=dict)
+    stroke_width: int = 3
+    activity_ids: list[str] | None = None
+
+
+@define
+class ExportPreview:
+    """The tracks an export would hold (newest first), and the most an export may hold."""
+
+    activity_ids: list[str]
+    limit: int

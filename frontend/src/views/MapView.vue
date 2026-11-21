@@ -1,18 +1,21 @@
 <script setup lang="ts">
 // A full-page 3D terrain map (MapTiler Outdoor, or satellite imagery, on a terrain-RGB DEM), centered on the
 // Washington Cascades, with the athlete's activity tracks (their PMTiles archive) colored by sport. Clicking a track
-// opens its details; the filter panel narrows tracks by sport and date.
+// opens its details; the filter panel narrows tracks by sport and date; the area button draws a box whose tracks
+// download for CalTopo.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre looks for its worker next to its own module, which the bundle doesn't keep; emit it as an asset
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import { Protocol } from 'pmtiles'
-import { api, SignedOutError, TRACKS_URL, useSignedIn, type ActivitySummary, type MapActivities } from '@/api'
+import { api, SignedOutError, TRACKS_URL, useSignedIn, type ActivitySummary, type BBox, type MapActivities } from '@/api'
+import { AreaSelect } from '@/areaSelect'
 import { filterExpression, matches } from '@/mapFilters'
 import { settings } from '@/settings'
 import { SPORT_COLOR_EXPRESSION } from '@/sports'
 import ActivityPopup from '@/components/ActivityPopup.vue'
+import ExportDialog from '@/components/ExportDialog.vue'
 import FloatingButton from '@/components/FloatingButton.vue'
 import MapFilters from '@/components/MapFilters.vue'
 
@@ -48,8 +51,19 @@ const candidates = ref<ActivitySummary[]>([])
 const selectedId = ref('')
 // the popup's content is rendered by Vue, teleported into MapLibre's popup
 const popupContent = document.createElement('div')
+// area mode (drawing an area, then its export dialog): the area drawn, the tracks ticked for export, and the one
+// hovered in the dialog's list
+const areaMode = ref(false)
+const area = ref<BBox | null>(null)
+const exportIds = ref<string[]>([])
+const focusId = ref<string | null>(null)
+const filtersOpen = ref(false)
+// after a download: how many tracks, for the import instructions shown briefly
+const downloaded = ref(0)
+let downloadedTimer: ReturnType<typeof setTimeout> | undefined
 let map: maplibregl.Map | null = null
 let popup: maplibregl.Popup | null = null
+let areaSelect: AreaSelect | null = null
 
 const byId = computed(() => new Map(data.value?.activities.map((a) => [a.id, a]) ?? []))
 const onMap = computed(() =>
@@ -58,6 +72,7 @@ const onMap = computed(() =>
     return activity ? [activity] : []
   }),
 )
+const mapTypes = computed(() => [...new Set(onMap.value.map((activity) => activity.type))])
 
 let resolveMapLoaded: () => void = () => {}
 const mapLoaded = new Promise<void>((resolve) => (resolveMapLoaded = resolve))
@@ -94,7 +109,9 @@ onMounted(() => {
 })
 
 function closeOnEscape(event: KeyboardEvent): void {
-  if (event.key === 'Escape') popup?.remove()
+  if (event.key !== 'Escape') return
+  if (areaMode.value) endArea()
+  else popup?.remove()
 }
 
 // a button in MapLibre's own control style (like the terrain button) that toggles satellite imagery
@@ -112,6 +129,34 @@ const satelliteControl: maplibregl.IControl = {
   },
   onRemove: () => satelliteButton.parentElement?.remove(),
 }
+
+function startArea(): void {
+  popup?.remove()
+  filtersOpen.value = false
+  downloaded.value = 0
+  area.value = null
+  exportIds.value = []
+  focusId.value = null
+  areaMode.value = true
+  areaSelect?.start()
+}
+
+function endArea(): void {
+  areaSelect?.cancel()
+  areaMode.value = false
+  area.value = null
+  exportIds.value = []
+  focusId.value = null
+}
+
+function onDownloaded(count: number): void {
+  endArea()
+  downloaded.value = count
+  clearTimeout(downloadedTimer)
+  downloadedTimer = setTimeout(() => (downloaded.value = 0), 12_000)
+}
+
+watch([exportIds, focusId], applyFilters)
 
 function addSatellite(m: maplibregl.Map): void {
   m.addSource(SATELLITE, {
@@ -211,9 +256,14 @@ function addTracks(m: maplibregl.Map): void {
   m.addLayer(line('tracks-selected-casing', { 'line-color': '#facc15', 'line-width': width(6) }))
   m.addLayer(line('tracks-selected', { 'line-color': SPORT_COLOR_EXPRESSION, 'line-width': width(2.8) }))
 
-  m.on('mouseenter', HIT_LAYER, () => (m.getCanvas().style.cursor = 'pointer'))
-  m.on('mouseleave', HIT_LAYER, () => (m.getCanvas().style.cursor = ''))
+  m.on('mouseenter', HIT_LAYER, () => {
+    if (!areaSelect?.drawing) m.getCanvas().style.cursor = 'pointer'
+  })
+  m.on('mouseleave', HIT_LAYER, () => {
+    if (!areaSelect?.drawing) m.getCanvas().style.cursor = ''
+  })
   m.on('click', (event) => {
+    if (areaMode.value) return // the clicks draw an area
     const found = [...tracksAt(m, event.point)]
       .flatMap((id) => byId.value.get(id) ?? [])
       .sort((a, b) => b.start_date_local.localeCompare(a.start_date_local))
@@ -236,6 +286,7 @@ function addTracks(m: maplibregl.Map): void {
     candidates.value = found
     selectedId.value = found[0]!.id
   })
+  areaSelect = new AreaSelect(m, (bbox) => (area.value = bbox))
   applyFilters()
 }
 
@@ -243,7 +294,10 @@ function applyFilters(): void {
   if (!map?.getLayer(HIT_LAYER)) return
   const filter = filterExpression(settings.mapFilters)
   for (const id of [HIT_LAYER, 'tracks-casing', 'tracks']) map.setFilter(id, filter)
-  const selected: maplibregl.FilterSpecification = ['all', filter, ['==', ['get', 'id'], selectedId.value]]
+  // highlighted: the export's ticked tracks while its dialog is open (just the one hovered in its list), else the
+  // popup's
+  const ids = area.value ? (focusId.value ? [focusId.value] : exportIds.value) : [selectedId.value]
+  const selected: maplibregl.FilterSpecification = ['all', filter, ['in', ['get', 'id'], ['literal', ids]]]
   for (const id of ['tracks-selected-casing', 'tracks-selected']) map.setFilter(id, selected)
 }
 
@@ -278,6 +332,7 @@ watch(signedIn, async (value) => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', closeOnEscape)
+  clearTimeout(downloadedTimer)
   popup?.remove()
   map?.remove()
 })
@@ -296,7 +351,39 @@ onBeforeUnmount(() => {
     <div v-else-if="data && !data.on_map.length" class="notice bottom">
       No tracks yet. <RouterLink to="/">Import your activities</RouterLink> to see them here.
     </div>
-    <MapFilters v-if="data?.on_map.length" :activities="onMap" :omitted="data.map_tracks_omitted" />
+    <template v-if="data?.on_map.length">
+      <MapFilters v-model:open="filtersOpen" :activities="onMap" :omitted="data.map_tracks_omitted" />
+      <FloatingButton
+        side="right"
+        :offset="1"
+        :label="areaMode ? 'Cancel export' : 'Export an area to CalTopo'"
+        @click="areaMode ? endArea() : startArea()"
+      >
+        <span v-if="areaMode" aria-hidden="true">✕</span>
+        <svg v-else class="area-icon" viewBox="0 0 22 22" aria-hidden="true">
+          <rect x="3" y="4" width="13" height="10" stroke-dasharray="2.2 1.6" />
+          <path d="M12 11l1.7 8 1.6-2.9 3.3-.4z" />
+        </svg>
+      </FloatingButton>
+    </template>
+    <div v-if="areaMode && !area" class="notice top">Click two corners of the area · Esc to cancel</div>
+    <div v-if="downloaded" class="notice top" role="status">
+      Downloaded {{ downloaded.toLocaleString() }} {{ downloaded === 1 ? 'track' : 'tracks' }}. In CalTopo, open a map,
+      choose <strong>Import</strong> at the top of the sidebar, and pick the file.
+      <button type="button" class="dismiss" aria-label="Dismiss" @click="downloaded = 0">✕</button>
+    </div>
+    <ExportDialog
+      v-if="area && data"
+      :bbox="area"
+      :types="mapTypes"
+      :omitted="data.map_tracks_omitted"
+      :activities="byId"
+      @preview="exportIds = $event"
+      @focus="focusId = $event"
+      @redraw="startArea"
+      @close="endArea"
+      @downloaded="onDownloaded"
+    />
   </template>
   <FloatingButton side="left" to="/" label="Back">←</FloatingButton>
   <Teleport v-if="candidates.length" :to="popupContent">
@@ -333,6 +420,20 @@ onBeforeUnmount(() => {
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
 }
 
+/* the export button's icon: a dashed box and a pointer */
+.area-icon {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.area-icon path {
+  fill: currentColor;
+}
+
 .map :deep(.maplibregl-popup-close-button:hover) {
   background: #f1f5f9;
   color: #0f172a;
@@ -363,6 +464,26 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 40px);
   padding: 12px 18px;
   font-size: 14px;
+}
+
+.notice.top {
+  top: 80px;
+  bottom: auto;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  padding: 10px 16px;
+  font-size: 14px;
+}
+
+.notice .dismiss {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: #64748b;
+  font: inherit;
+  cursor: pointer;
 }
 
 .notice a {

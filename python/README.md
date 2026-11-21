@@ -63,6 +63,8 @@ settings fail at startup (`ConfigError`).
 | `GET /api/import` | bearer | Import progress: `{"state": "idle"\|"running"\|"done"\|"failed", "activities", "tracks_done", "tracks_total", "skipped", "map_tracks_omitted", "error"}` |
 | `GET /api/activities` | bearer | For the map: `{"activities": [ActivitySummary, ...] (in no particular order), "on_map": [id, ...] (the ids in its tracks, newest first), "map_tracks_omitted"}` |
 | `GET /api/tracks.pmtiles` | bearer | The athlete's map tracks (PMTiles), whole or by HTTP `Range` (206), with an `ETag`; 404 before the first build |
+| `POST /api/activities/export/preview` | bearer | `{"bbox": [w, s, e, n], "sports", "date_from", "date_to"}` (the map's filters): the map tracks that meet the area, `{"activity_ids": [...] (newest first), "limit"}` |
+| `POST /api/activities/export` | bearer | The same, plus `"mode": "whole"\|"clip"`, `"folder"`, `"units"`, `"styles": {type: {"label", "color"}}` and `"stroke_width"`, and optionally `"activity_ids"` (chosen from the preview; they replace the filters' search): the tracks at full detail as a CalTopo GeoJSON download (`X-Track-Count`; see [CalTopo exports](#caltopo-exports)). 400 for an empty area, over 100 tracks or over 1M points |
 | `GET /api/stats/vert?today=YYYY-MM-DD` | bearer | On-foot vert from Jan 1 to today's date, this year and the 5 before, from the activity index: `{"as_of", "activities", "years": [{"year", "vert_m"}, ...]}` |
 
 "bearer" routes take the API token as `Authorization: Bearer <token>` (from `/token/new`) or, when there's no
@@ -115,6 +117,17 @@ Rebuilds cost ~7.4 ms of CPU per track (`docs/benchmarks/tippecanoe-rebuild`), s
 **3,000 most recent** activities with a track (`MAP_TRACKS_LIMIT`). Older ones are still synced, archived and
 counted in stats. A build over the limit logs a WARN (`map tracks limited`, with the counts), and a finished
 import records how many were left off (`map_tracks_omitted`), which the Re-sync panel shows.
+
+### CalTopo exports
+
+On the map, an athlete can draw a box and download the tracks in it that pass the map's filters, as a GeoJSON
+file CalTopo imports (its format: `docs/caltopo.md`; the design: `docs/plans/caltopo-export.md`). The tracks are
+found from `tracks.pmtiles` (ranged reads of the tiles under the box, at the deepest zoom where they're at most 64,
+with the box grown by how far those tiles' simplified tracks can be from the full ones), then built at full detail
+from `streams.json.gz`: `[lon, lat, ele, ms]` points, whole or clipped to the box (`caltopo.py`). Ids are `uuid5`s of
+the athlete, folder and activity (and the box, for clipped pieces), so re-importing a track doesn't duplicate it in
+CalTopo; changing those keys would. The archive's tippecanoe flags are part of this: the prefilter's margin assumes
+every zoom keeps every track, simplified by `--simplification=4`.
 
 ### Rate limits
 

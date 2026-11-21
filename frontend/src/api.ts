@@ -59,6 +59,43 @@ export interface MapActivities {
   map_tracks_omitted: number
 }
 
+/** An area: [west, south, east, north], in degrees. */
+export type BBox = [number, number, number, number]
+
+/** A CalTopo export of the map's tracks in an area (the preview reads only the area and the filters). */
+export interface TrackExportRequest {
+  bbox: BBox
+  /** Activity types; empty is every type. */
+  sports: string[]
+  /** Inclusive local start dates, as YYYYMMDD. */
+  date_from: number
+  date_to: number
+  /** Whole tracks that meet the area, or only their pieces inside it. */
+  mode: 'whole' | 'clip'
+  /** The CalTopo folder the tracks go in; null for none. */
+  folder: string | null
+  units: 'ft' | 'm'
+  /** Each activity type's label and color (`sportStyles`). */
+  styles: Record<string, { label: string; color: string }>
+  stroke_width: number
+  /** The tracks to export (ticked in the dialog), in place of the filters' search. */
+  activity_ids?: string[]
+}
+
+export interface ExportPreview {
+  /** The tracks the export would hold, newest first. */
+  activity_ids: string[]
+  /** The most tracks an export may hold. */
+  limit: number
+}
+
+export interface ExportFile {
+  blob: Blob
+  filename: string
+  /** Tracks in the file. */
+  count: number
+}
+
 export interface Athlete {
   athlete_id: string
   name: string
@@ -91,7 +128,8 @@ export function stravaActivityUrl(id: string): string {
   return `https://www.strava.com/activities/${encodeURIComponent(id)}`
 }
 
-async function call<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
+/** A request to the server; signed-out answers and errors (`{"message"}`) are thrown. */
+async function send(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<Response> {
   const response = await fetch(path, {
     method,
     credentials: 'same-origin',
@@ -102,11 +140,32 @@ async function call<T>(method: 'GET' | 'POST', path: string, payload?: unknown):
   if (response.status === 401 || response.status === 403) {
     throw new SignedOutError()
   }
-  const body = await response.json().catch(() => ({}))
   if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
     throw new Error(body.message ?? `Request failed (${response.status})`)
   }
-  return body as T
+  return response
+}
+
+async function call<T>(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<T> {
+  const response = await send(method, path, payload)
+  return (await response.json().catch(() => ({}))) as T
+}
+
+/** A file the server sent for download, with the name its `Content-Disposition` gives. */
+async function download(response: Response, fallback: string): Promise<{ blob: Blob; filename: string }> {
+  const filename = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') ?? '')?.[1] ?? fallback
+  return { blob: await response.blob(), filename }
+}
+
+/** Hand a file to the browser to save. */
+export function saveFile(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 /** Today in the browser's timezone, as YYYY-MM-DD. */
@@ -125,6 +184,14 @@ export const api = {
   importStatus: () => call<ImportStatus>('GET', '/api/import'),
   startImport: () => call<ImportStatus>('POST', '/api/import'),
   activities: () => call<MapActivities>('GET', '/api/activities'),
+  /** The tracks an export of an area would hold. */
+  exportPreview: (request: TrackExportRequest) => call<ExportPreview>('POST', '/api/activities/export/preview', request),
+  /** The tracks in an area, as a CalTopo GeoJSON file. */
+  exportTracks: async (request: TrackExportRequest): Promise<ExportFile> => {
+    const response = await send('POST', '/api/activities/export', request)
+    const count = Number(response.headers.get('X-Track-Count') ?? 0)
+    return { ...(await download(response, 'skintrackr-tracks.json')), count }
+  },
   logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
   /** Delete everything stored for the athlete, and sign out. */
   disconnect: () => call<{ ok: boolean }>('POST', '/auth/disconnect'),

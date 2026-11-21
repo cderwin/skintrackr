@@ -1,6 +1,8 @@
+import json
 import shutil
 import time
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fakeredis import FakeServer
@@ -8,7 +10,8 @@ from litestar.testing import TestClient
 
 from skintrackr.clients.blob_store import archive_keys, tracks_key
 from skintrackr.crypto import generate_jwt
-from skintrackr.models import ActivitySummary
+from skintrackr.models import ActivitySummary, Stream, loads
+from skintrackr.tracks import track_feature
 from tests.conftest import (
     ACTIVITY,
     ACTIVITY_ID,
@@ -22,8 +25,11 @@ from tests.conftest import (
     bearer,
     connect,
     issue_api_token,
+    requires_tippecanoe,
     session,
     summary,
+    track_streams,
+    tracks_archive,
     wait_for_background,
     with_store,
 )
@@ -267,3 +273,205 @@ def test_tracks_whole_and_ranged(client: TestClient, bucket: FakeBucket, redis_s
 
     beyond = client.get(TRACKS, headers={**headers, "Range": "bytes=100-200"})
     assert (beyond.status_code, beyond.json()) == (416, {"message": "range not satisfiable"})
+
+
+# --- CalTopo exports
+
+PREVIEW = "/api/activities/export/preview"
+EXPORT_AREA = "/api/activities/export"
+WEST, SOUTH = -121.0, 47.0
+# ~760 m east-west, 1.1 km north-south
+AREA = [WEST, SOUTH, WEST + 0.01, SOUTH + 0.01]
+STEP = 0.0001  # ~11 m
+
+
+def heading_north(lon: float, lat: float, steps: int) -> list[tuple[float, float]]:
+    return [(lat + i * STEP, lon) for i in range(steps + 1)]
+
+
+TOURS = {
+    # id: (type, day, fixes)
+    "i1": ("BackcountrySki", "2025-01-10", heading_north(WEST + 0.005, SOUTH + 0.002, 50)),  # inside
+    "i2": ("BackcountrySki", "2025-02-20", heading_north(WEST + 0.003, SOUTH + 0.008, 40)),  # leaves to the north
+    "i3": ("Run", "2025-03-01", heading_north(WEST + 0.007, SOUTH + 0.002, 20)),  # inside, another sport
+    "i4": ("BackcountrySki", "2024-12-01", heading_north(WEST + 0.05, SOUTH, 20)),  # outside
+}
+
+
+def archive_tours(bucket: FakeBucket, redis_server: FakeServer, tours: dict = TOURS) -> None:
+    """Archive the tours, index them, and build the map's archive of their tracks."""
+    summaries, features = [], []
+    for activity_id, (type, day, fixes) in tours.items():
+        activity = {**ACTIVITY, "id": activity_id, "name": f"Tour {activity_id}", "type": type,
+                    "start_date": f"{day}T17:00:00Z", "start_date_local": f"{day}T09:00:00"}
+        streams = track_streams(fixes)
+        keys = archive_keys(ATHLETE_ID, activity_id)
+        bucket.put_json(keys.activity, activity)
+        bucket.put_json(keys.streams, streams)
+        summary = loads(json.dumps(activity), ActivitySummary)
+        summaries.append(summary)
+        features.append(track_feature(summary, loads(json.dumps(streams), list[Stream])))
+    bucket.put(tracks_key(ATHLETE_ID), tracks_archive(features))
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, summaries))
+
+
+def export_body(**fields: Any) -> dict[str, Any]:
+    return {
+        "bbox": AREA,
+        "sports": [],
+        "date_from": 20240101,
+        "date_to": 20251231,
+        "mode": "whole",
+        "folder": "skintrackr exports",
+        "units": "ft",
+        "styles": {"BackcountrySki": {"label": "Backcountry ski", "color": "#e11d48"}},
+        "stroke_width": 3,
+        **fields,
+    }
+
+
+@pytest.mark.parametrize("path", [PREVIEW, EXPORT_AREA])
+def test_export_area_requires_a_token(client: TestClient, path: str) -> None:
+    response = client.post(path, json=export_body())
+    assert (response.status_code, response.json()) == (401, {"message": "Authorization header required"})
+
+
+@requires_tippecanoe
+@pytest.mark.parametrize(
+    ("filters", "expected"),
+    [
+        ({}, ["i3", "i2", "i1"]),  # newest first
+        ({"sports": ["BackcountrySki"]}, ["i2", "i1"]),
+        ({"date_from": 20250201}, ["i3", "i2"]),
+    ],
+)
+def test_export_preview(client: TestClient, bucket: FakeBucket, redis_server: FakeServer, filters: dict, expected: list[str]) -> None:
+    archive_tours(bucket, redis_server)
+    response = client.post(PREVIEW, json=export_body(**filters), headers=bearer(issue_api_token(redis_server)))
+    assert (response.status_code, response.json()) == (200, {"activity_ids": expected, "limit": 100})
+
+
+def test_export_preview_without_tracks(client: TestClient, redis_server: FakeServer) -> None:
+    response = client.post(PREVIEW, json=export_body(), headers=bearer(issue_api_token(redis_server)))
+    assert (response.status_code, response.json()) == (200, {"activity_ids": [], "limit": 100})
+
+
+@requires_tippecanoe
+def test_export_area_whole(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    archive_tours(bucket, redis_server)
+    body = export_body(sports=["BackcountrySki"])
+    response = client.post(EXPORT_AREA, json=body, headers=bearer(issue_api_token(redis_server)))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/geo+json"
+    today = datetime.now(UTC).date().isoformat()
+    assert response.headers["content-disposition"] == f'attachment; filename="skintrackr-tracks-{today}.json"'
+    assert response.headers["x-track-count"] == "2"
+    folder, *lines = response.json()["features"]
+    assert folder["properties"] == {"class": "Folder", "title": "skintrackr exports", "visible": True, "labelVisible": True}
+    assert [line["properties"]["title"] for line in lines] == ["2025-01-10 Tour i1", "2025-02-20 Tour i2"]  # oldest first
+    first = lines[0]
+    assert first["properties"]["folderId"] == folder["id"]
+    assert first["properties"]["stroke"] == "#e11d48"
+    assert first["properties"]["description"].startswith("Backcountry ski\n")
+    # whole, full detail: every fix, with elevation and time
+    assert len(first["geometry"]["coordinates"]) == 51
+    assert first["geometry"]["coordinates"][0] == [WEST + 0.005, SOUTH + 0.002, 1000, 1736528400000]
+    assert len(lines[1]["geometry"]["coordinates"]) == 41  # the part outside the area too
+
+
+@requires_tippecanoe
+def test_export_area_clip(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    archive_tours(bucket, redis_server)
+    body = export_body(sports=["BackcountrySki"], mode="clip", folder=None)
+    response = client.post(EXPORT_AREA, json=body, headers=bearer(issue_api_token(redis_server)))
+
+    assert response.status_code == 200
+    lines = response.json()["features"]
+    assert all("folderId" not in line["properties"] for line in lines)
+    leaving = lines[1]["geometry"]["coordinates"]
+    # i2 from its start to the area's north edge: 20 fixes inside, then a point on the edge
+    assert len(leaving) == 21 and leaving[-1][1] == pytest.approx(SOUTH + 0.01)
+
+
+@requires_tippecanoe
+def test_export_area_skips_deleted_activities(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    archive_tours(bucket, redis_server)
+    bucket.s3.delete_object(Bucket=bucket.NAME, Key=archive_keys(ATHLETE_ID, "i1").streams)
+    response = client.post(EXPORT_AREA, json=export_body(), headers=bearer(issue_api_token(redis_server)))
+    assert (response.status_code, response.headers["x-track-count"]) == (200, "2")
+
+
+@requires_tippecanoe
+@pytest.mark.parametrize(
+    ("limit", "body", "message"),
+    [
+        ("EXPORT_TRACKS_LIMIT", {}, "3 tracks: exports are limited to 2. Narrow the area or the map's filters."),
+        ("EXPORT_POINTS_LIMIT", {}, "This export is too large (more than 2 points). Clip to the area, or narrow it or the filters."),
+        (None, {"bbox": [WEST + 0.1, SOUTH, WEST + 0.2, SOUTH + 0.1]}, "No tracks in this area match the map's filters."),
+    ],
+)
+def test_export_area_refused(
+    client: TestClient, bucket: FakeBucket, redis_server: FakeServer, monkeypatch: pytest.MonkeyPatch,
+    limit: str | None, body: dict, message: str,
+) -> None:
+    archive_tours(bucket, redis_server)
+    if limit:
+        monkeypatch.setattr(f"skintrackr.server.api.{limit}", 2)
+    response = client.post(EXPORT_AREA, json=export_body(**body), headers=bearer(issue_api_token(redis_server)))
+    assert (response.status_code, response.json()) == (400, {"message": message})
+
+
+@requires_tippecanoe
+def test_export_area_chosen_tracks(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    archive_tours(bucket, redis_server)
+    # the filters are ignored, duplicates collapse, and another athlete's (or a deleted) activity is skipped
+    body = export_body(sports=["BackcountrySki"], activity_ids=["i3", "i1", "i3", "someone-elses"])
+    response = client.post(EXPORT_AREA, json=body, headers=bearer(issue_api_token(redis_server)))
+
+    assert (response.status_code, response.headers["x-track-count"]) == (200, "2")
+    _, *lines = response.json()["features"]
+    assert [line["properties"]["title"] for line in lines] == ["2025-01-10 Tour i1", "2025-03-01 Tour i3"]
+
+
+@requires_tippecanoe
+@pytest.mark.parametrize(
+    ("ids", "message"),
+    [
+        (["i1", "i2", "i3"], "3 tracks: exports are limited to 2. Choose fewer tracks."),
+        (["i1", "i1", "i1"], None),  # one track, once
+        ([], "No tracks in this area match the map's filters."),
+        (["someone-elses"], "No tracks in this area match the map's filters."),
+        (["i4"], "No tracks in this area match the map's filters."),  # outside the area
+    ],
+)
+def test_export_area_chosen_tracks_refused(
+    client: TestClient, bucket: FakeBucket, redis_server: FakeServer, monkeypatch: pytest.MonkeyPatch,
+    ids: list[str], message: str | None,
+) -> None:
+    archive_tours(bucket, redis_server)
+    monkeypatch.setattr("skintrackr.server.api.EXPORT_TRACKS_LIMIT", 2)
+    response = client.post(EXPORT_AREA, json=export_body(activity_ids=ids), headers=bearer(issue_api_token(redis_server)))
+    if message is None:
+        assert (response.status_code, response.headers["x-track-count"]) == (200, "1")
+    else:
+        assert (response.status_code, response.json()) == (400, {"message": message})
+
+
+@pytest.mark.parametrize("path", [PREVIEW, EXPORT_AREA])
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (b"not json", "invalid export request"),
+        (b'{"bbox": "everywhere"}', "invalid export request"),
+        (json.dumps(export_body(bbox=[1, 0, 0, 1])).encode(), "invalid area"),
+        (json.dumps(export_body(bbox=[0, 0, 1])).encode(), "invalid area"),
+        (json.dumps(export_body(mode="partial")).encode(), "invalid export request"),
+        (json.dumps(export_body(units="furlongs")).encode(), "invalid export request"),
+        (json.dumps(export_body(stroke_width=0)).encode(), "invalid export request"),
+    ],
+)
+def test_export_area_invalid_request(client: TestClient, redis_server: FakeServer, path: str, body: bytes, message: str) -> None:
+    headers = {**bearer(issue_api_token(redis_server)), "Content-Type": "application/json"}
+    response = client.post(path, content=body, headers=headers)
+    assert (response.status_code, response.json()) == (400, {"message": message})

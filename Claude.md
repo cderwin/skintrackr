@@ -21,15 +21,16 @@ Paths below are relative to `python/`.
 5. **skintrackr/clients/blob_store.py** - ALL blob-storage (S3-compatible) operations via `BlobStore`, and the archive layout; `archive_activity` downloads an activity and its streams from intervals.icu and uploads them gzipped
 6. **skintrackr/server/connect.py** - `/auth/connect` (API key form), `/auth/logout`, `/auth/disconnect`; `connect_athlete()` is shared with `/token/new`
 7. **skintrackr/server/ingest.py** - Ingesting activities into the bucket and the Redis index: `ingest_activity`, bulk imports (`start_import`, resumed at startup), the periodic sync (`run_sync_loop`/`sync_athlete`; it stands in for webhooks, which intervals.icu only sends to registered OAuth apps), `remove_activity`/`remove_athlete`
-8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`, and the map's `list_activities`/`map_tracks`)
+8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`, the map's `list_activities`/`map_tracks`, and CalTopo exports: `export_preview`/`export_tracks`, which find an area's tracks with `export_candidates`)
 9. **skintrackr/server/token_api.py** - API token issue/verify/revoke handlers; **server/auth.py** has `authenticate_request`
 10. **skintrackr/crypto.py** - JWT signing/verification and NaCl secretbox encryption
 11. **skintrackr/config.py** - Environment configuration (`Config`, `BlobStorageConfig`)
 12. **skintrackr/server/errors.py** - `{"message": ...}` error responses and `fail_with()`
 13. **skintrackr/models.py**, **gpx.py**, **logging.py** - attrs types + cattrs converter, GPX generation, JSON-lines logging
 14. **skintrackr/vert.py** - `year_to_date()`: year-to-date vert from an athlete's activity index
-15. **skintrackr/tracks.py** - map tracks: `track_feature()` (simplified GeoJSON per activity), `map_track_ids()` (the `MAP_TRACKS_LIMIT` = 3,000 most recent), `build_pmtiles()` (runs tippecanoe); rebuilds are scheduled by `schedule_tracks` in `server/ingest.py`
-16. **skintrackr/cli/** - click commands: `serve`, and `migrate <name>` (one-off data migrations, kept after they've run)
+15. **skintrackr/tracks.py** - map tracks: `track_feature()` (simplified GeoJSON per activity), `map_track_ids()` (the `MAP_TRACKS_LIMIT` = 3,000 most recent), `build_pmtiles()` (runs tippecanoe); rebuilds are scheduled by `schedule_tracks` in `server/ingest.py`. Also areas for exports (shapely and numpy): `BBox`, `split_at_gaps`, `clip_line`, and the prefilter that finds an area's tracks in the archive's tiles (`tile_track_ids`), which relies on `TIPPECANOE_FLAGS`
+16. **skintrackr/caltopo.py** - CalTopo exports: full-detail `[lon, lat, ele, ms]` lines from archived streams (`export_points`, `export_lines`), and `CaltopoDocument` (stable `uuid5` ids; the format is in `docs/caltopo.md`, pinned by `tests/fixtures/caltopo-export.json`)
+17. **skintrackr/cli/** - click commands: `serve`, and `migrate <name>` (one-off data migrations, kept after they've run)
 
 ### Architecture Rules
 
@@ -88,51 +89,35 @@ the Dockerfile and CI build it).
 
 ## Git Workflow & Best Practices
 
-### Branch Strategy (Gitflow)
+### Branch Strategy (GitHub flow)
 
-1. **Main Branches**
-   - `main` - Production-ready code
-   - `develop` - Integration branch for features
+Follow [GitHub flow](https://docs.github.com/en/get-started/using-github/github-flow): `main` is the only
+long-lived branch, and it's always deployable, since every merge to `main` deploys to production. All work
+happens on short-lived branches made from `main` and merged back into it through a pull request. There is no
+`develop`, `release/*` or `hotfix/*` branch: an urgent fix is just a small branch and a quick PR.
 
-2. **Supporting Branches**
-   - `feature/*` - New features (branch from `develop`)
-   - `bugfix/*` - Bug fixes (branch from `develop`)
-   - `hotfix/*` - Urgent production fixes (branch from `main`)
-   - `release/*` - Release preparation (branch from `develop`)
+Name branches by kind, with a short description: `feature/*` for new features, `bugfix/*` for fixes, and
+`chore/*`, `docs/*` or `refactor/*` for other changes.
 
 ### Workflow Steps
 
-#### For New Features
 ```bash
-# 1. Create feature branch from develop
-git checkout develop
-git pull origin develop
+# 1. Branch from an up-to-date main
+git checkout main
+git pull origin main
 git checkout -b feature/descriptive-name
 
-# 2. Work on feature, commit regularly
-git add .
+# 2. Work in small commits with descriptive messages
+git add <files>
 git commit -m "feat: descriptive commit message"
 
-# 3. Push and create PR
+# 3. Push and open a PR into main (early, as a draft, if you want feedback)
 git push -u origin feature/descriptive-name
-# Then create PR to merge into develop
-```
+gh pr create --base main
 
-#### For Bug Fixes
-```bash
-# Branch from develop
-git checkout -b bugfix/fix-description
+# 4. Address review comments with more commits on the same branch; CI runs on every push
 
-# Work, commit, push, create PR to develop
-```
-
-#### For Hotfixes
-```bash
-# Branch from main for urgent production fixes
-git checkout main
-git checkout -b hotfix/critical-issue
-
-# Fix, commit, push, create PR to BOTH main and develop
+# 5. Once approved and green, merge the PR (this deploys) and delete the branch
 ```
 
 ### Commit Message Convention
@@ -148,7 +133,7 @@ Follow conventional commits:
 
 ### Pull Request Process
 
-**ALWAYS create PRs instead of pushing directly to main/develop**
+**ALWAYS create PRs instead of pushing directly to main**
 
 1. **Before Creating PR**
    ```bash
@@ -236,7 +221,7 @@ just web-typecheck   # vue-tsc (part of `just check`)
 - The `/connect` page posts the API key to `/auth/connect` (`api.connect`), which signs the browser in (session cookie), then routes to `/connected`; `SYNC_WINDOW_DAYS` in `src/api.ts` mirrors the server's default
 - Call the server through `src/api.ts` (it sends the cookie; 401/403 become `SignedOutError`); `useSignedIn()` tells whether the browser is signed in
 - Per-browser preferences (vert goal, units, map filters) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()` and distances with `formatDistance()`
-- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`). The map draws the athlete's tracks from `/api/tracks.pmtiles` (the `pmtiles` protocol), colored by sport (`src/sports.ts`); clicking opens `ActivityPopup` (GPX export and intervals.icu/Strava links), and `MapFilters` narrows by sport and calendar year (`src/mapFilters.ts` holds the shared filter logic). `MAP_TRACKS_LIMIT` in `src/api.ts` mirrors the server's
+- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`). The map draws the athlete's tracks from `/api/tracks.pmtiles` (the `pmtiles` protocol), colored by sport (`src/sports.ts`); clicking opens `ActivityPopup` (GPX export and intervals.icu/Strava links), and `MapFilters` narrows by sport and calendar year (`src/mapFilters.ts` holds the shared filter logic). The export button beside the filters draws a box (`src/areaSelect.ts`), and `ExportDialog` previews its tracks with the map's filters (`exportFilters`), lists them to tick, and downloads the ticked ones (`activity_ids`) for CalTopo in the map's colors (`sportStyles`). `MAP_TRACKS_LIMIT` in `src/api.ts` mirrors the server's
 - Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines
@@ -360,4 +345,4 @@ Note: every unmatched GET path serves the landing page (SPA fallback), so a new 
 
 ---
 
-**Remember**: Write compact, organized code that reuses what already exists and stays consistent with the surrounding style — never duplicate logic. Maintain separation of concerns (intervals.icu API in `clients/intervals.py`, Redis in `clients/store.py`, blob storage in `clients/blob_store.py`, auth/crypto in `server/auth.py`/`crypto.py`), run `just test` and `just check` before creating PRs, and follow gitflow with PRs for all changes.
+**Remember**: Write compact, organized code that reuses what already exists and stays consistent with the surrounding style — never duplicate logic. Maintain separation of concerns (intervals.icu API in `clients/intervals.py`, Redis in `clients/store.py`, blob storage in `clients/blob_store.py`, auth/crypto in `server/auth.py`/`crypto.py`), run `just test` and `just check` before creating PRs, and follow GitHub flow (branch from `main`, merge back by PR) for all changes.

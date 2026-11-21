@@ -19,6 +19,17 @@ export interface MapFilters {
   to: string
 }
 
+/** How the map's CalTopo export is set up. */
+export interface CaltopoExport {
+  /** Whole tracks that meet the area, or only their pieces inside it. */
+  mode: 'whole' | 'clip'
+  /** Whether the tracks go in a CalTopo folder, and its name. */
+  folder: boolean
+  folderName: string
+}
+
+export const DEFAULT_FOLDER_NAME = 'skintrackr exports'
+
 interface Settings {
   /** Yearly vert goal, in meters (shown in `units`). */
   goalM: number
@@ -28,6 +39,7 @@ interface Settings {
   satellite: boolean
   /** How many activities were off the map (over its limit) when its warning was dismissed. */
   mapLimitDismissed: number
+  caltopoExport: CaltopoExport
 }
 
 const DEFAULTS: Settings = {
@@ -36,6 +48,7 @@ const DEFAULTS: Settings = {
   mapFilters: { sports: [], period: 'all', from: '', to: '' },
   satellite: false,
   mapLimitDismissed: 0,
+  caltopoExport: { mode: 'whole', folder: true, folderName: DEFAULT_FOLDER_NAME },
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
@@ -52,6 +65,14 @@ function loadMapFilters(saved: Partial<MapFilters> | undefined): MapFilters {
   }
 }
 
+function loadCaltopoExport(saved: Partial<CaltopoExport> | undefined): CaltopoExport {
+  return {
+    mode: saved?.mode === 'clip' ? 'clip' : 'whole',
+    folder: saved?.folder !== false,
+    folderName: typeof saved?.folderName === 'string' ? saved.folderName : DEFAULT_FOLDER_NAME,
+  }
+}
+
 function load(): Settings {
   try {
     const saved: Partial<Settings> = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
@@ -62,9 +83,14 @@ function load(): Settings {
       satellite: saved.satellite === true,
       mapLimitDismissed:
         typeof saved.mapLimitDismissed === 'number' && saved.mapLimitDismissed > 0 ? saved.mapLimitDismissed : 0,
+      caltopoExport: loadCaltopoExport(saved.caltopoExport),
     }
   } catch {
-    return { ...DEFAULTS, mapFilters: { ...DEFAULTS.mapFilters, sports: [] } }
+    return {
+      ...DEFAULTS,
+      mapFilters: { ...DEFAULTS.mapFilters, sports: [] },
+      caltopoExport: { ...DEFAULTS.caltopoExport },
+    }
   }
 }
 
@@ -102,4 +128,15 @@ export function formatDistance(meters: number): string {
   const imperial = settings.units === 'ft'
   const value = meters / (imperial ? METERS_PER_MILE : 1000)
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} ${imperial ? 'mi' : 'km'}`
+}
+
+/** A local start (`YYYY-MM-DDTHH:MM:SS`) as a date in the browser's locale, e.g. "Jan 10, 2025". */
+export function formatDate(value: string): string {
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
+  if (!year || !month || !day) return ''
+  return new Date(year, month - 1, day).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
 }

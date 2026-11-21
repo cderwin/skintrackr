@@ -316,11 +316,16 @@ class IntervalsClient:
         Raises:
             IntervalsError: The activity's start date is invalid, or fetching its streams failed.
         """
-        start = _start_time(activity)
+        start = activity_start(activity)
         return activity_gpx(activity, await self.get_activity_stream(activity.id), start)
 
 
-def _start_time(activity: Activity) -> datetime:
+def activity_start(activity: Activity) -> datetime:
+    """When the activity started (`start_date`, in UTC).
+
+    Raises:
+        IntervalsError: The start date is invalid.
+    """
     try:
         return datetime.fromisoformat(activity.start_date)
     except ValueError as e:
@@ -333,7 +338,7 @@ def activity_gpx(activity: Activity, points: list[StreamPoint], start: datetime 
     Raises:
         IntervalsError: The activity's start date is invalid.
     """
-    metadata = GpxMetadata(name=activity.name, type=activity.type, time=start or _start_time(activity))
+    metadata = GpxMetadata(name=activity.name, type=activity.type, time=start or activity_start(activity))
     return build_gpx(points, metadata)
 
 
