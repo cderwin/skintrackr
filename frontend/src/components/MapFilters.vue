@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The map's filter panel: sports and a period (calendar years, the last 12 months, or a custom range). Edits
 // `settings.mapFilters`, which the map applies; counts the activities on the map that pass.
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { MAP_TRACKS_LIMIT, type ActivitySummary } from '@/api'
 import { isFiltered, matches } from '@/mapFilters'
 import { settings, type MapPeriod } from '@/settings'
@@ -15,7 +15,8 @@ const props = defineProps<{
   omitted: number
 }>()
 
-const open = ref(false)
+// the panel is open (the map closes it to make room for its export dialog)
+const open = defineModel<boolean>('open', { default: false })
 const filters = settings.mapFilters
 
 const sports = computed(() => {

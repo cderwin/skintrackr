@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The CalTopo export dialog, for an area drawn on the map: counts the tracks in it that pass the map's filters
-// (reported with `preview`, so the map highlights them), and downloads them as a GeoJSON file CalTopo imports.
+// (reported with `preview`, so the map highlights them), and downloads them as a GeoJSON file CalTopo imports
+// (reported with `downloaded`, which closes it). It sits just below the map's export button.
 import { computed, ref, watch } from 'vue'
 import { api, MAP_TRACKS_LIMIT, saveFile, SignedOutError, type BBox, type TrackExportRequest } from '@/api'
 import { describeFilters, exportFilters } from '@/mapFilters'
@@ -17,14 +18,13 @@ const props = defineProps<{
   /** Older activities left off the map (over its limit), so not exported either. */
   omitted: number
 }>()
-const emit = defineEmits<{ redraw: []; close: []; preview: [ids: string[]] }>()
+const emit = defineEmits<{ redraw: []; close: []; preview: [ids: string[]]; downloaded: [count: number] }>()
 
-type State = 'counting' | 'ready' | 'empty' | 'over' | 'preparing' | 'downloaded' | 'error'
+type State = 'counting' | 'ready' | 'empty' | 'over' | 'preparing' | 'error'
 
 const state = ref<State>('counting')
 const count = ref(0)
 const limit = ref(0)
-const downloaded = ref(0)
 const error = ref('')
 const options = settings.caltopoExport
 const filtersText = computed(() => describeFilters(settings.mapFilters))
@@ -69,8 +69,7 @@ async function download(): Promise<void> {
   try {
     const file = await api.exportTracks(request())
     saveFile(file.blob, file.filename)
-    downloaded.value = file.count
-    state.value = 'downloaded'
+    emit('downloaded', file.count)
   } catch (e) {
     fail(e)
   }
@@ -99,15 +98,11 @@ const tracks = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'track' : 'trac
         <strong>{{ tracks(count) }}</strong>: exports are limited to {{ limit }}. Narrow the area or the map's filters.
       </template>
       <template v-else-if="state === 'error'"><span class="failed">{{ error }}</span></template>
-      <template v-else-if="state === 'downloaded'">
-        Downloaded {{ tracks(downloaded) }}. In CalTopo, open a map, choose <strong>Import</strong> at the top of the
-        sidebar, and pick this file. Tracks already on the map from an earlier export aren't added twice.
-      </template>
       <template v-else>
         <strong>{{ tracks(count) }}</strong><template v-if="filtersText"> · {{ filtersText }}</template>
       </template>
     </p>
-    <p v-if="omitted && state !== 'downloaded'" class="note">
+    <p v-if="omitted" class="note">
       Only the map's {{ MAP_TRACKS_LIMIT.toLocaleString() }} most recent tracks can be exported.
     </p>
 
@@ -137,7 +132,7 @@ const tracks = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'track' : 'trac
       <button
         type="button"
         class="primary"
-        :disabled="!['ready', 'downloaded'].includes(state)"
+        :disabled="state !== 'ready'"
         @click="download"
       >
         {{ state === 'preparing' ? 'Preparing…' : 'Download for CalTopo' }}
@@ -147,11 +142,13 @@ const tracks = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'track' : 'trac
 </template>
 
 <style scoped>
+/* just below the export button (48px, 20px from the top), right edges aligned: the button is one step in from the
+   right corner (FloatingButton's offset 1) */
 .export {
   position: fixed;
   z-index: 20;
   top: 80px;
-  left: 20px;
+  right: 80px;
   width: min(360px, calc(100vw - 40px));
   padding: 16px;
   border-radius: 16px;
@@ -263,6 +260,7 @@ input[type='checkbox'] {
 @media (max-width: 600px) {
   .export {
     top: auto;
+    right: auto;
     bottom: 0;
     left: 0;
     width: 100%;

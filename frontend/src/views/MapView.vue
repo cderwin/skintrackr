@@ -55,6 +55,10 @@ const popupContent = document.createElement('div')
 const areaMode = ref(false)
 const area = ref<BBox | null>(null)
 const exportIds = ref<string[]>([])
+const filtersOpen = ref(false)
+// after a download: how many tracks, for the import instructions shown briefly
+const downloaded = ref(0)
+let downloadedTimer: ReturnType<typeof setTimeout> | undefined
 let map: maplibregl.Map | null = null
 let popup: maplibregl.Popup | null = null
 let areaSelect: AreaSelect | null = null
@@ -108,36 +112,26 @@ function closeOnEscape(event: KeyboardEvent): void {
   else popup?.remove()
 }
 
-/** A button in MapLibre's own control style (like the terrain button), its icon set by `className` in CSS. */
-function controlButton(className: string, onClick: () => void): HTMLButtonElement {
-  const button = document.createElement('button')
-  button.type = 'button'
-  button.className = className
-  button.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>'
-  button.addEventListener('click', onClick)
-  return button
+// a button in MapLibre's own control style (like the terrain button) that toggles satellite imagery
+const satelliteButton = document.createElement('button')
+satelliteButton.type = 'button'
+satelliteButton.className = 'satellite-toggle'
+satelliteButton.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>'
+satelliteButton.addEventListener('click', () => (settings.satellite = !settings.satellite))
+const satelliteControl: maplibregl.IControl = {
+  onAdd: () => {
+    const group = document.createElement('div')
+    group.className = 'maplibregl-ctrl maplibregl-ctrl-group'
+    group.append(satelliteButton)
+    return group
+  },
+  onRemove: () => satelliteButton.parentElement?.remove(),
 }
-
-/** A map control holding one button. */
-function buttonControl(button: HTMLButtonElement): maplibregl.IControl {
-  return {
-    onAdd: () => {
-      const group = document.createElement('div')
-      group.className = 'maplibregl-ctrl maplibregl-ctrl-group'
-      group.append(button)
-      return group
-    },
-    onRemove: () => button.parentElement?.remove(),
-  }
-}
-
-const satelliteButton = controlButton('satellite-toggle', () => (settings.satellite = !settings.satellite))
-const satelliteControl = buttonControl(satelliteButton)
-const areaButton = controlButton('area-select', () => (areaMode.value ? endArea() : startArea()))
-areaButton.title = 'Export an area to CalTopo'
 
 function startArea(): void {
   popup?.remove()
+  filtersOpen.value = false
+  downloaded.value = 0
   area.value = null
   exportIds.value = []
   areaMode.value = true
@@ -151,10 +145,13 @@ function endArea(): void {
   exportIds.value = []
 }
 
-watch(areaMode, (on) => {
-  areaButton.classList.toggle('area-enabled', on)
-  areaButton.setAttribute('aria-pressed', String(on))
-})
+function onDownloaded(count: number): void {
+  endArea()
+  downloaded.value = count
+  clearTimeout(downloadedTimer)
+  downloadedTimer = setTimeout(() => (downloaded.value = 0), 12_000)
+}
+
 watch(exportIds, applyFilters)
 
 function addSatellite(m: maplibregl.Map): void {
@@ -286,8 +283,6 @@ function addTracks(m: maplibregl.Map): void {
     selectedId.value = found[0]!.id
   })
   areaSelect = new AreaSelect(m, (bbox) => (area.value = bbox))
-  // added last, so it tops the bottom-right controls
-  m.addControl(buttonControl(areaButton), 'bottom-right')
   applyFilters()
 }
 
@@ -332,6 +327,7 @@ watch(signedIn, async (value) => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', closeOnEscape)
+  clearTimeout(downloadedTimer)
   popup?.remove()
   map?.remove()
 })
@@ -350,8 +346,27 @@ onBeforeUnmount(() => {
     <div v-else-if="data && !data.on_map.length" class="notice bottom">
       No tracks yet. <RouterLink to="/">Import your activities</RouterLink> to see them here.
     </div>
-    <MapFilters v-if="data?.on_map.length" :activities="onMap" :omitted="data.map_tracks_omitted" />
+    <template v-if="data?.on_map.length">
+      <MapFilters v-model:open="filtersOpen" :activities="onMap" :omitted="data.map_tracks_omitted" />
+      <FloatingButton
+        side="right"
+        :offset="1"
+        :label="areaMode ? 'Cancel export' : 'Export an area to CalTopo'"
+        @click="areaMode ? endArea() : startArea()"
+      >
+        <span v-if="areaMode" aria-hidden="true">✕</span>
+        <svg v-else class="area-icon" viewBox="0 0 22 22" aria-hidden="true">
+          <rect x="3" y="4" width="13" height="10" stroke-dasharray="2.2 1.6" />
+          <path d="M12 11l1.7 8 1.6-2.9 3.3-.4z" />
+        </svg>
+      </FloatingButton>
+    </template>
     <div v-if="areaMode && !area" class="notice top">Click two corners of the area · Esc to cancel</div>
+    <div v-if="downloaded" class="notice top" role="status">
+      Downloaded {{ downloaded.toLocaleString() }} {{ downloaded === 1 ? 'track' : 'tracks' }}. In CalTopo, open a map,
+      choose <strong>Import</strong> at the top of the sidebar, and pick the file.
+      <button type="button" class="dismiss" aria-label="Dismiss" @click="downloaded = 0">✕</button>
+    </div>
     <ExportDialog
       v-if="area && data"
       :bbox="area"
@@ -360,6 +375,7 @@ onBeforeUnmount(() => {
       @preview="exportIds = $event"
       @redraw="startArea"
       @close="endArea"
+      @downloaded="onDownloaded"
     />
   </template>
   <FloatingButton side="left" to="/" label="Back">←</FloatingButton>
@@ -397,13 +413,18 @@ onBeforeUnmount(() => {
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
 }
 
-/* the area button's icon: a dashed box and a pointer, grey (blue when on) */
-.map :deep(.area-select .maplibregl-ctrl-icon) {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%23333' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='13' height='10' stroke-dasharray='2.2 1.6'/%3E%3Cpath d='M12 11l1.7 8 1.6-2.9 3.3-.4z' fill='%23333'/%3E%3C/svg%3E");
+/* the export button's icon: a dashed box and a pointer */
+.area-icon {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
 }
 
-.map :deep(.area-select.area-enabled .maplibregl-ctrl-icon) {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='13' height='10' stroke-dasharray='2.2 1.6'/%3E%3Cpath d='M12 11l1.7 8 1.6-2.9 3.3-.4z' fill='%2333b5e5'/%3E%3C/svg%3E");
+.area-icon path {
+  fill: currentColor;
 }
 
 .map :deep(.maplibregl-popup-close-button:hover) {
@@ -446,6 +467,16 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 40px);
   padding: 10px 16px;
   font-size: 14px;
+}
+
+.notice .dismiss {
+  margin-left: 6px;
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: #64748b;
+  font: inherit;
+  cursor: pointer;
 }
 
 .notice a {

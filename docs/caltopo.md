@@ -133,8 +133,11 @@ the same as a track recorded in CalTopo or imported from a GPX with times.
 - So a line is duplicated whenever its `id` is new, even if it's the same track. A line with a fixed `id` derived
   from its activity sat next to the same track imported earlier with a random `id`.
 
-Not tested: whether re-importing an `id` with *changed* contents (a new color, say) updates the object or keeps the
-old one, and whether the same `id`s can be imported into a second map.
+- Re-importing an `id` with changed contents **updates** the object: a line whose properties were edited in the
+  file took the new ones on re-import.
+- `id`s aren't global: a file whose `id`s were already imported into one map imports normally into another.
+
+So stable `id`s are safe: a re-export updates the lines already on the map, and imports into any map.
 
 ### Markers (export)
 

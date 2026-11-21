@@ -26,17 +26,19 @@ described in [`docs/caltopo.md`](../caltopo.md).
 7. **Stable ids.** CalTopo keeps a file's ids and recognizes objects by them: re-importing an id that's already on
    the map adds nothing, and a folder with a new id is a new folder, even with the same name. So ids are derived,
    not random (see "Ids"). Repeated exports into the same folder name land in one folder, and tracks already
-   there aren't duplicated.
+   there are updated rather than duplicated. Checked 2026-11-20: ids import into any map, and re-importing an
+   id updates the object.
 
 ## User flow
 
-1. On the map, the athlete clicks the **area button**, at the top of the bottom-right control stack. Its icon is a
-   dashed rectangle with a pointer. The button turns blue, the cursor becomes a crosshair, and a hint appears:
+1. On the map, the athlete clicks the **export button**, a round button beside the filter button in the top
+   right, styled like it. Its icon is a dashed rectangle with a pointer, and it shows ✕ while the export is
+   on. The filter panel closes, the cursor becomes a crosshair, and a hint appears:
    "Click two corners of the area · Esc to cancel". Clicks on tracks no longer open popups.
 2. **First click** drops a corner. On desktop, the rectangle then follows the pointer. Panning and zooming still
    work.
 3. **Second click** finishes the rectangle. It stays on the map, dashed, draped over the terrain. The export
-   dialog opens, and the dialog immediately asks the server which tracks are in the area. Those tracks are
+   dialog opens just below the export button, right edges aligned (a bottom sheet on phones), and the dialog immediately asks the server which tracks are in the area. Those tracks are
    highlighted on the map, and the dialog reads "**23 tracks** · Ski touring · 2025", naming the active map
    filters.
 4. The dialog's options:
@@ -44,9 +46,10 @@ described in [`docs/caltopo.md`](../caltopo.md).
    - **Folder**: [x] "Put tracks in a CalTopo folder", with a text box below it ("skintrackr exports").
    - Buttons: **Redraw** (back to step 1, keeping the options), **Cancel**, and **Download for CalTopo**.
 5. Download shows "Preparing…" (full-detail exports take a few seconds). The browser then saves
-   `skintrackr-tracks-2026-11-20.json`, and the dialog changes to: "Downloaded 23 tracks. In CalTopo, open a map,
-   choose Import at the top of the sidebar, and pick this file. Tracks already on the map from an earlier export aren't added twice."
-6. Esc, Cancel or the area button (pressed again) at any point removes the rectangle and leaves the mode.
+   `skintrackr-tracks-2026-11-20.json`, the dialog closes and the mode ends, and a notice shows for a few
+   seconds: "Downloaded 23 tracks. In CalTopo, open a map, choose Import at the top of the sidebar, and pick the
+   file."
+6. Esc, Cancel or the export button (pressed again) at any point removes the rectangle and leaves the mode.
 
 The dialog explains the cases where nothing can be downloaded instead:
 
@@ -229,8 +232,7 @@ gets the same id, and CalTopo skips it:
 - The athlete id keeps two athletes' exports apart if they import into a shared map.
 - The keys are effectively a stored format: changing them would duplicate every line athletes re-export into maps
   that already have them. They're pinned by the fixture test, and a change needs a good reason.
-- A re-export that only restyles a track (a new map color, say) keeps its ids. Whether CalTopo then updates the
-  line or keeps the old one wasn't tested (see "Phases", phase 0). Either way it doesn't duplicate.
+- A re-export that only restyles a track (a new map color, say) keeps its ids, and CalTopo updates the line.
 
 ## Limits
 
@@ -346,10 +348,11 @@ Paths relative to `frontend/src/`.
   - It handles `click`, `mousemove` (the rectangle follows the pointer after the first corner) and the crosshair
     cursor.
   - It ignores a second click at the same point (a zero-area box).
+- **`FloatingButton.vue`**: an `offset` prop places a button one step in from its corner, beside another.
+- **`MapFilters.vue`**: its panel's `open` is a `v-model`, so the map can close it when an export starts.
 - **`MapView.vue`**
-  - **Controls.** The satellite toggle's control boilerplate becomes `buttonControl(button)`, and both buttons
-    use it. The area button gets an inline SVG icon in the same grey (blue when on), like the satellite icon. It's
-    disabled until tracks have loaded.
+  - **Export button.** A `FloatingButton` beside the filter button (offset 1), with an inline SVG icon; ✕ while
+    the export is on. It shows once tracks have loaded, like the filter button.
   - **Clicks.** The track `click` handler returns early while the area mode is on.
   - **Esc.** `closeOnEscape` also cancels drawing and closes the dialog.
   - **Highlight.** The selected-track layers' filter changes from one id to a list. Their ids are the export
@@ -357,7 +360,7 @@ Paths relative to `frontend/src/`.
     instead of adding layers.
 - **`components/ExportDialog.vue`** (new)
   - Props: the bbox, the activities (for the filter summary), and the filters.
-  - It emits `redraw`, `close` and `preview(ids)`.
+  - It emits `redraw`, `close`, `preview(ids)` and `downloaded(count)` (the map then closes it).
   - It's a card on desktop, and a bottom sheet under 600 px.
   - It owns its states: counting, ready, over the limit, empty, preparing, downloaded, error.
   - The folder name input is disabled while the box is unchecked. A blank name falls back to the default.
@@ -411,7 +414,8 @@ one.
    - Two quick imports for the ids, with `caltopo_examples/import/03-fixed-id.json`: import it into a second,
      fresh map (do the same ids import into another map?), then change the line's `stroke` in the file and
      import it again into the first (is the line updated, or kept?). If ids don't work across maps, fall back to
-     random ids and drop decision 7. Still open.
+     random ids and drop decision 7. ~~Done~~ 2026-11-20: they import into a second map, and a re-import with
+     changed properties updates the line.
    - ~~Timings on Fly~~: dropped (2026-11-20). Reading the tile archive made the preview's cost small, and the
      export's is bounded by `EXPORT_TRACKS_LIMIT`.
 1. **Geometry**: the dependencies, the GEOS simplification and `split_at_gaps` (a refactor, so the map is
@@ -422,7 +426,7 @@ one.
 3. **Document**: `caltopo.py`, `activity_start`, with tests and the fixture.
 4. **Endpoints**: the models, `export_candidates`, both handlers, logging, the README API table, and tests.
    This can merge on its own and is usable with `curl`.
-5. **Map**: `buttonControl`, the area button, `areaSelect.ts`, and the highlight that takes a list of ids.
+5. **Map**: the export button, `areaSelect.ts`, and the highlight that takes a list of ids.
 6. **Dialog**: `ExportDialog.vue`, the `api.ts` split, settings, `exportFilters` and `sportStyles`. Then the
    CLAUDE.md updates.
 
@@ -444,6 +448,9 @@ Where the code differs from the plan above:
 - **Track limit**: the preview lists every track in the area, even over `EXPORT_TRACKS_LIMIT`, so the dialog can
   say how many there are; only the export refuses.
 - **Points without positions**: an activity with no `latlng` stream gives no points.
+- **UI, after review**: the export button moved from the map's controls to beside the filter button, styled like
+  it; the dialog sits just below it, right edges aligned; and a download closes the dialog, with the import
+  instructions in a short notice instead.
 
 ## Risks
 
@@ -455,11 +462,9 @@ Where the code differs from the plan above:
   report the points limit from the preview's estimate instead).
 - **Memory.** One response holds up to ~43 MB of encoded JSON, plus the streams of the 4 activities in progress.
   That's within the 1 GB machine, alongside tippecanoe rebuilds; the export log's `bytes` shows how close it gets.
-- **Stale lines in CalTopo.** Because re-imports are matched by id, a track that changed since it was last
-  exported (renamed, restyled, or re-archived with new streams) may keep its old version on the map, if CalTopo
-  skips known ids rather than updating them (phase 0). The athlete can delete the line in CalTopo and import
-  again. A line the athlete deleted from the map may also be skipped on re-import, if CalTopo remembers deleted
-  ids; that would show up in the same phase 0 check.
+- **Edits in CalTopo are overwritten.** Re-importing an id updates the object, so restyling or renaming an
+  exported line in CalTopo is undone by exporting the same track into the same folder again. Exporting into
+  another folder name makes a separate copy instead.
 - **The map's 3,000-track limit** leaves older tracks out of exports, as it does on the map. The dialog repeats
   the map's note when tracks are omitted.
 - **The prefilter depends on the archive's build.** If the tippecanoe flags change (dropping features, or more
