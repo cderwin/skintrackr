@@ -1,18 +1,21 @@
 <script setup lang="ts">
 // A full-page 3D terrain map (MapTiler Outdoor, or satellite imagery, on a terrain-RGB DEM), centered on the
 // Washington Cascades, with the athlete's activity tracks (their PMTiles archive) colored by sport. Clicking a track
-// opens its details; the filter panel narrows tracks by sport and date.
+// opens its details; the filter panel narrows tracks by sport and date; the area button draws a box whose tracks
+// download for CalTopo.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre looks for its worker next to its own module, which the bundle doesn't keep; emit it as an asset
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import { Protocol } from 'pmtiles'
-import { api, SignedOutError, TRACKS_URL, useSignedIn, type ActivitySummary, type MapActivities } from '@/api'
+import { api, SignedOutError, TRACKS_URL, useSignedIn, type ActivitySummary, type BBox, type MapActivities } from '@/api'
+import { AreaSelect } from '@/areaSelect'
 import { filterExpression, matches } from '@/mapFilters'
 import { settings } from '@/settings'
 import { SPORT_COLOR_EXPRESSION } from '@/sports'
 import ActivityPopup from '@/components/ActivityPopup.vue'
+import ExportDialog from '@/components/ExportDialog.vue'
 import FloatingButton from '@/components/FloatingButton.vue'
 import MapFilters from '@/components/MapFilters.vue'
 
@@ -48,8 +51,13 @@ const candidates = ref<ActivitySummary[]>([])
 const selectedId = ref('')
 // the popup's content is rendered by Vue, teleported into MapLibre's popup
 const popupContent = document.createElement('div')
+// area mode (drawing an area, then its export dialog): the area drawn, and the tracks the export would hold
+const areaMode = ref(false)
+const area = ref<BBox | null>(null)
+const exportIds = ref<string[]>([])
 let map: maplibregl.Map | null = null
 let popup: maplibregl.Popup | null = null
+let areaSelect: AreaSelect | null = null
 
 const byId = computed(() => new Map(data.value?.activities.map((a) => [a.id, a]) ?? []))
 const onMap = computed(() =>
@@ -58,6 +66,7 @@ const onMap = computed(() =>
     return activity ? [activity] : []
   }),
 )
+const mapTypes = computed(() => [...new Set(onMap.value.map((activity) => activity.type))])
 
 let resolveMapLoaded: () => void = () => {}
 const mapLoaded = new Promise<void>((resolve) => (resolveMapLoaded = resolve))
@@ -94,24 +103,59 @@ onMounted(() => {
 })
 
 function closeOnEscape(event: KeyboardEvent): void {
-  if (event.key === 'Escape') popup?.remove()
+  if (event.key !== 'Escape') return
+  if (areaMode.value) endArea()
+  else popup?.remove()
 }
 
-// a button in MapLibre's own control style (like the terrain button) that toggles satellite imagery
-const satelliteButton = document.createElement('button')
-satelliteButton.type = 'button'
-satelliteButton.className = 'satellite-toggle'
-satelliteButton.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>'
-satelliteButton.addEventListener('click', () => (settings.satellite = !settings.satellite))
-const satelliteControl: maplibregl.IControl = {
-  onAdd: () => {
-    const group = document.createElement('div')
-    group.className = 'maplibregl-ctrl maplibregl-ctrl-group'
-    group.append(satelliteButton)
-    return group
-  },
-  onRemove: () => satelliteButton.parentElement?.remove(),
+/** A button in MapLibre's own control style (like the terrain button), its icon set by `className` in CSS. */
+function controlButton(className: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = className
+  button.innerHTML = '<span class="maplibregl-ctrl-icon" aria-hidden="true"></span>'
+  button.addEventListener('click', onClick)
+  return button
 }
+
+/** A map control holding one button. */
+function buttonControl(button: HTMLButtonElement): maplibregl.IControl {
+  return {
+    onAdd: () => {
+      const group = document.createElement('div')
+      group.className = 'maplibregl-ctrl maplibregl-ctrl-group'
+      group.append(button)
+      return group
+    },
+    onRemove: () => button.parentElement?.remove(),
+  }
+}
+
+const satelliteButton = controlButton('satellite-toggle', () => (settings.satellite = !settings.satellite))
+const satelliteControl = buttonControl(satelliteButton)
+const areaButton = controlButton('area-select', () => (areaMode.value ? endArea() : startArea()))
+areaButton.title = 'Export an area to CalTopo'
+
+function startArea(): void {
+  popup?.remove()
+  area.value = null
+  exportIds.value = []
+  areaMode.value = true
+  areaSelect?.start()
+}
+
+function endArea(): void {
+  areaSelect?.cancel()
+  areaMode.value = false
+  area.value = null
+  exportIds.value = []
+}
+
+watch(areaMode, (on) => {
+  areaButton.classList.toggle('area-enabled', on)
+  areaButton.setAttribute('aria-pressed', String(on))
+})
+watch(exportIds, applyFilters)
 
 function addSatellite(m: maplibregl.Map): void {
   m.addSource(SATELLITE, {
@@ -211,9 +255,14 @@ function addTracks(m: maplibregl.Map): void {
   m.addLayer(line('tracks-selected-casing', { 'line-color': '#facc15', 'line-width': width(6) }))
   m.addLayer(line('tracks-selected', { 'line-color': SPORT_COLOR_EXPRESSION, 'line-width': width(2.8) }))
 
-  m.on('mouseenter', HIT_LAYER, () => (m.getCanvas().style.cursor = 'pointer'))
-  m.on('mouseleave', HIT_LAYER, () => (m.getCanvas().style.cursor = ''))
+  m.on('mouseenter', HIT_LAYER, () => {
+    if (!areaSelect?.drawing) m.getCanvas().style.cursor = 'pointer'
+  })
+  m.on('mouseleave', HIT_LAYER, () => {
+    if (!areaSelect?.drawing) m.getCanvas().style.cursor = ''
+  })
   m.on('click', (event) => {
+    if (areaMode.value) return // the clicks draw an area
     const found = [...tracksAt(m, event.point)]
       .flatMap((id) => byId.value.get(id) ?? [])
       .sort((a, b) => b.start_date_local.localeCompare(a.start_date_local))
@@ -236,6 +285,9 @@ function addTracks(m: maplibregl.Map): void {
     candidates.value = found
     selectedId.value = found[0]!.id
   })
+  areaSelect = new AreaSelect(m, (bbox) => (area.value = bbox))
+  // added last, so it tops the bottom-right controls
+  m.addControl(buttonControl(areaButton), 'bottom-right')
   applyFilters()
 }
 
@@ -243,7 +295,9 @@ function applyFilters(): void {
   if (!map?.getLayer(HIT_LAYER)) return
   const filter = filterExpression(settings.mapFilters)
   for (const id of [HIT_LAYER, 'tracks-casing', 'tracks']) map.setFilter(id, filter)
-  const selected: maplibregl.FilterSpecification = ['all', filter, ['==', ['get', 'id'], selectedId.value]]
+  // highlighted: the export's tracks while its dialog is open, else the popup's
+  const ids = area.value ? exportIds.value : [selectedId.value]
+  const selected: maplibregl.FilterSpecification = ['all', filter, ['in', ['get', 'id'], ['literal', ids]]]
   for (const id of ['tracks-selected-casing', 'tracks-selected']) map.setFilter(id, selected)
 }
 
@@ -297,6 +351,16 @@ onBeforeUnmount(() => {
       No tracks yet. <RouterLink to="/">Import your activities</RouterLink> to see them here.
     </div>
     <MapFilters v-if="data?.on_map.length" :activities="onMap" :omitted="data.map_tracks_omitted" />
+    <div v-if="areaMode && !area" class="notice top">Click two corners of the area · Esc to cancel</div>
+    <ExportDialog
+      v-if="area && data"
+      :bbox="area"
+      :types="mapTypes"
+      :omitted="data.map_tracks_omitted"
+      @preview="exportIds = $event"
+      @redraw="startArea"
+      @close="endArea"
+    />
   </template>
   <FloatingButton side="left" to="/" label="Back">←</FloatingButton>
   <Teleport v-if="candidates.length" :to="popupContent">
@@ -333,6 +397,15 @@ onBeforeUnmount(() => {
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
 }
 
+/* the area button's icon: a dashed box and a pointer, grey (blue when on) */
+.map :deep(.area-select .maplibregl-ctrl-icon) {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%23333' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='13' height='10' stroke-dasharray='2.2 1.6'/%3E%3Cpath d='M12 11l1.7 8 1.6-2.9 3.3-.4z' fill='%23333'/%3E%3C/svg%3E");
+}
+
+.map :deep(.area-select.area-enabled .maplibregl-ctrl-icon) {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='13' height='10' stroke-dasharray='2.2 1.6'/%3E%3Cpath d='M12 11l1.7 8 1.6-2.9 3.3-.4z' fill='%2333b5e5'/%3E%3C/svg%3E");
+}
+
 .map :deep(.maplibregl-popup-close-button:hover) {
   background: #f1f5f9;
   color: #0f172a;
@@ -362,6 +435,16 @@ onBeforeUnmount(() => {
   width: max-content;
   max-width: calc(100vw - 40px);
   padding: 12px 18px;
+  font-size: 14px;
+}
+
+.notice.top {
+  top: 80px;
+  bottom: auto;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  padding: 10px 16px;
   font-size: 14px;
 }
 

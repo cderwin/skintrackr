@@ -1,6 +1,7 @@
 # Plan: export an area's tracks to CalTopo
 
-Status: ready to implement (2026-11-20). Branch: `feature/caltopo-export` (from `main`).
+Status: implemented (2026-11-20), in draft PR #19. Branch: `feature/caltopo-export` (from `main`). See
+"Implementation notes" for where it differs from this plan.
 
 ## Goal
 
@@ -143,8 +144,9 @@ The one thing the prefilter can miss: `_segments` drops a lone fix between two G
 one point), so the archive doesn't have it. A track whose only point in the box is such a fix is missed. That's
 rare enough to accept and document.
 
-**Cost.** At most 64 tile reads plus the directories, and decoding them. Phase 0 times a small and a large box on
-Fly. If the reads are slow, adjacent tiles (they're stored in Hilbert order) can be fetched in one range read.
+**Cost.** At most 64 tile reads plus the directories, and decoding them. Locally, on the 3,000-track demo
+archive (17 MB), a preview took 0.65 s for a small box (366 tracks) and 1 s for a large one (2,839 tracks). If
+reads get slow, adjacent tiles (they're stored in Hilbert order) can be fetched in one range read.
 
 ## Building the tracks
 
@@ -228,7 +230,7 @@ gets the same id, and CalTopo skips it:
 - The keys are effectively a stored format: changing them would duplicate every line athletes re-export into maps
   that already have them. They're pinned by the fixture test, and a change needs a good reason.
 - A re-export that only restyles a track (a new map color, say) keeps its ids. Whether CalTopo then updates the
-  line or keeps the old one wasn't tested (phase 0 checks it). Either way it doesn't duplicate.
+  line or keeps the old one wasn't tested (see "Phases", phase 0). Either way it doesn't duplicate.
 
 ## Limits
 
@@ -236,8 +238,7 @@ Full-detail tracks are big. A 5-hour tour is about 18,000 points, or about 0.8 M
 as constants:
 
 - **`EXPORT_TRACKS_LIMIT` = 100.** This bounds the time an export takes: each track is a bucket read plus JSON
-  decoding of every stream. The preview reports it, so the dialog can refuse before the download starts. Phase 0
-  tunes it on Fly.
+  decoding of every stream. The preview reports it, so the dialog can refuse before the download starts.
 - **`EXPORT_POINTS_LIMIT` = 1,000,000** (about 41 MB). This bounds the file, for CalTopo's sake. In the import
   test, CalTopo took about 3 s per 100,000 points (34 s for 1.2M points, 50 MB) and stayed smooth afterwards; a
   forum report failed at 125 MB. So 1M points imports in under half a minute. Points are counted as tracks are
@@ -247,7 +248,7 @@ as constants:
 Tracks are read and built **4 at a time** (`EXPORT_READ_CONCURRENCY`). Decoding and geometry run in
 `asyncio.to_thread`, so a long export doesn't block other requests on the single shared CPU. The finished
 document is returned in one response (no streaming). That keeps errors such as the point limit as clean 400s.
-If phase 0 finds that Fly's proxy times out on long exports, switch to a streamed response (see "Risks").
+If Fly's proxy ever times out on long exports, switch to a streamed response (see "Risks").
 
 ## Server changes
 
@@ -379,8 +380,8 @@ Python, with no network, using the existing fakes:
   - Built with tippecanoe (skipped when it isn't installed; CI installs it): an archive from a few tracks, read
     back through the prefilter, finds the right ones at z14 and at a low zoom. This catches a change to the
     flags that the prefilter relies on.
-- **`test_blob_store.py`**: `read_track_tiles` against a small checked-in archive (`tests/fixtures/tracks.pmtiles`)
-  in `FakeBucket`: present tiles, absent tiles, and no archive.
+- **`test_blob_store.py`**: `read_track_tiles` against an archive in `FakeBucket`: present tiles, absent tiles,
+  and no archive.
 - **`test_caltopo.py`**
   - With and without a folder: there's one `Folder`, every line's `folderId` matches it, and the ids are unique.
   - Ids are stable: building the same export twice gives the same ids. A different folder name, athlete or box
@@ -393,7 +394,7 @@ Python, with no network, using the existing fakes:
   - A small checked-in expected document (`tests/fixtures/caltopo-export.json`) pins the exact output format,
     ids included.
 - **`test_api.py`**
-  - Preview and export for activities archived in `FakeBucket`, with the fixture archive.
+  - Preview and export for activities archived in `FakeBucket`, with their archive built by tippecanoe.
   - Sport and date filters apply. A track in the archive whose activity is gone is skipped.
   - Whole vs. clip. The headers: media type, file name, `X-Track-Count`.
   - 400s: an empty area, the track limit, the points limit, a bad box, a bad body. 401 when unauthenticated.
@@ -410,15 +411,14 @@ one.
    - Two quick imports for the ids, with `caltopo_examples/import/03-fixed-id.json`: import it into a second,
      fresh map (do the same ids import into another map?), then change the line's `stroke` in the file and
      import it again into the first (is the line updated, or kept?). If ids don't work across maps, fall back to
-     random ids and drop decision 7.
-   - On Fly (`fly ssh console`), time `read_activity` plus `export_points` for 20 activities. This sets
-     `EXPORT_TRACKS_LIMIT`. Time the preview for a small and a large box once the endpoints are deployed.
-   - Check how long a response can take behind Fly's proxy before it gives up.
+     random ids and drop decision 7. Still open.
+   - ~~Timings on Fly~~: dropped (2026-11-20). Reading the tile archive made the preview's cost small, and the
+     export's is bounded by `EXPORT_TRACKS_LIMIT`.
 1. **Geometry**: the dependencies, the GEOS simplification and `split_at_gaps` (a refactor, so the map is
    unchanged), then `BBox` and `clip_line`, with tests. The Dockerfile installs from the lock file, so check that
    shapely's and numpy's wheels install in the image (they have manylinux wheels; `just build`).
-2. **Prefilter**: `prefilter_zoom`, `prefilter_margin_m`, `tile_features`, `BlobStore.read_track_tiles`, the
-   fixture archive, and tests.
+2. **Prefilter**: `prefilter_zoom`, `prefilter_margin_m`, `tile_features`, `BlobStore.read_track_tiles`, and
+   tests.
 3. **Document**: `caltopo.py`, `activity_start`, with tests and the fixture.
 4. **Endpoints**: the models, `export_candidates`, both handlers, logging, the README API table, and tests.
    This can merge on its own and is usable with `curl`.
@@ -429,6 +429,22 @@ one.
 Each phase is one commit, and all of them go in one PR to `main`. Before opening it, run `just test` and
 `just check`.
 
+## Implementation notes
+
+Where the code differs from the plan above:
+
+- **Commits**: two, the server (phases 1–4) and the frontend (5–6), not one per phase.
+- **Test archives**: tests build real archives with tippecanoe (`tracks_archive` in `tests/conftest.py`, skipped
+  where tippecanoe isn't installed; CI installs it), rather than a checked-in `tracks.pmtiles`. This also tests
+  the flags the prefilter relies on.
+- **Names**: `tile_features` is `tile_track_ids`, and `area_track_ids` merges the tiles' results.
+  `prefilter_zoom` counts tiles without listing them (a world-sized box would otherwise list 268M z14 tiles).
+- **`read_activity`** decodes the streams in a worker thread, so exports (and GPX downloads) don't block the
+  event loop.
+- **Track limit**: the preview lists every track in the area, even over `EXPORT_TRACKS_LIMIT`, so the dialog can
+  say how many there are; only the export refuses.
+- **Points without positions**: an activity with no `latlng` stream gives no points.
+
 ## Risks
 
 - **The format is undocumented**, and CalTopo can change it. The examples cover what we write, and test imports of
@@ -438,7 +454,7 @@ Each phase is one commit, and all of them go in one PR to `main`. Before opening
   a smaller `EXPORT_TRACKS_LIMIT`, or a streamed response (send the folder, then each line as it's built, and
   report the points limit from the preview's estimate instead).
 - **Memory.** One response holds up to ~43 MB of encoded JSON, plus the streams of the 4 activities in progress.
-  That's within the 1 GB machine, alongside tippecanoe rebuilds, but phase 0 should watch it.
+  That's within the 1 GB machine, alongside tippecanoe rebuilds; the export log's `bytes` shows how close it gets.
 - **Stale lines in CalTopo.** Because re-imports are matched by id, a track that changed since it was last
   exported (renamed, restyled, or re-archived with new streams) may keep its old version on the map, if CalTopo
   skips known ids rather than updating them (phase 0). The athlete can delete the line in CalTopo and import

@@ -21,15 +21,16 @@ Paths below are relative to `python/`.
 5. **skintrackr/clients/blob_store.py** - ALL blob-storage (S3-compatible) operations via `BlobStore`, and the archive layout; `archive_activity` downloads an activity and its streams from intervals.icu and uploads them gzipped
 6. **skintrackr/server/connect.py** - `/auth/connect` (API key form), `/auth/logout`, `/auth/disconnect`; `connect_athlete()` is shared with `/token/new`
 7. **skintrackr/server/ingest.py** - Ingesting activities into the bucket and the Redis index: `ingest_activity`, bulk imports (`start_import`, resumed at startup), the periodic sync (`run_sync_loop`/`sync_athlete`; it stands in for webhooks, which intervals.icu only sends to registered OAuth apps), `remove_activity`/`remove_athlete`
-8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`, and the map's `list_activities`/`map_tracks`)
+8. **skintrackr/server/api.py** - Authenticated activity API (`export_track`, `persist_activity`, `import_start`/`import_status`, `vert_stats`, the map's `list_activities`/`map_tracks`, and CalTopo exports: `export_preview`/`export_tracks`, which find an area's tracks with `export_candidates`)
 9. **skintrackr/server/token_api.py** - API token issue/verify/revoke handlers; **server/auth.py** has `authenticate_request`
 10. **skintrackr/crypto.py** - JWT signing/verification and NaCl secretbox encryption
 11. **skintrackr/config.py** - Environment configuration (`Config`, `BlobStorageConfig`)
 12. **skintrackr/server/errors.py** - `{"message": ...}` error responses and `fail_with()`
 13. **skintrackr/models.py**, **gpx.py**, **logging.py** - attrs types + cattrs converter, GPX generation, JSON-lines logging
 14. **skintrackr/vert.py** - `year_to_date()`: year-to-date vert from an athlete's activity index
-15. **skintrackr/tracks.py** - map tracks: `track_feature()` (simplified GeoJSON per activity), `map_track_ids()` (the `MAP_TRACKS_LIMIT` = 3,000 most recent), `build_pmtiles()` (runs tippecanoe); rebuilds are scheduled by `schedule_tracks` in `server/ingest.py`
-16. **skintrackr/cli/** - click commands: `serve`, and `migrate <name>` (one-off data migrations, kept after they've run)
+15. **skintrackr/tracks.py** - map tracks: `track_feature()` (simplified GeoJSON per activity), `map_track_ids()` (the `MAP_TRACKS_LIMIT` = 3,000 most recent), `build_pmtiles()` (runs tippecanoe); rebuilds are scheduled by `schedule_tracks` in `server/ingest.py`. Also areas for exports (shapely and numpy): `BBox`, `split_at_gaps`, `clip_line`, and the prefilter that finds an area's tracks in the archive's tiles (`tile_track_ids`), which relies on `TIPPECANOE_FLAGS`
+16. **skintrackr/caltopo.py** - CalTopo exports: full-detail `[lon, lat, ele, ms]` lines from archived streams (`export_points`, `export_lines`), and `CaltopoDocument` (stable `uuid5` ids; the format is in `docs/caltopo.md`, pinned by `tests/fixtures/caltopo-export.json`)
+17. **skintrackr/cli/** - click commands: `serve`, and `migrate <name>` (one-off data migrations, kept after they've run)
 
 ### Architecture Rules
 
@@ -220,7 +221,7 @@ just web-typecheck   # vue-tsc (part of `just check`)
 - The `/connect` page posts the API key to `/auth/connect` (`api.connect`), which signs the browser in (session cookie), then routes to `/connected`; `SYNC_WINDOW_DAYS` in `src/api.ts` mirrors the server's default
 - Call the server through `src/api.ts` (it sends the cookie; 401/403 become `SignedOutError`); `useSignedIn()` tells whether the browser is signed in
 - Per-browser preferences (vert goal, units, map filters) live in `src/settings.ts` (reactive, saved to `localStorage`); format vert with `formatVert()` and distances with `formatDistance()`
-- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`). The map draws the athlete's tracks from `/api/tracks.pmtiles` (the `pmtiles` protocol), colored by sport (`src/sports.ts`); clicking opens `ActivityPopup`, and `MapFilters` narrows by sport and calendar year (`src/mapFilters.ts` holds the shared filter logic). `MAP_TRACKS_LIMIT` in `src/api.ts` mirrors the server's
+- Pages: `/` (landing), `/connected`, `/stats` (season vert), `/map` (MapLibre GL + MapTiler Outdoor and terrain-RGB, 3D terrain on; the worker URL is set explicitly with `setWorkerUrl`). The map draws the athlete's tracks from `/api/tracks.pmtiles` (the `pmtiles` protocol), colored by sport (`src/sports.ts`); clicking opens `ActivityPopup`, and `MapFilters` narrows by sport and calendar year (`src/mapFilters.ts` holds the shared filter logic). The area button (`src/areaSelect.ts`) draws a box, and `ExportDialog` previews and downloads its tracks for CalTopo, with the map's filters (`exportFilters`) and colors (`sportStyles`). `MAP_TRACKS_LIMIT` in `src/api.ts` mirrors the server's
 - Server tests use a stand-in build (`frontend_dir` fixture), so they don't need `npm run build`
 
 ## Testing Guidelines

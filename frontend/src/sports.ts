@@ -43,6 +43,11 @@ export function sportColor(type: string): string {
   return FAMILIES.find((family) => family.types.includes(type))?.color ?? OTHER_COLOR
 }
 
+/** Each activity type's label and color, for an export to draw tracks as the map does. */
+export function sportStyles(types: Iterable<string>): Record<string, { label: string; color: string }> {
+  return Object.fromEntries([...new Set(types)].map((type) => [type, { label: sportLabel(type), color: sportColor(type) }]))
+}
+
 /** A MapLibre expression coloring features by their `type` property, like `sportColor`. */
 export const SPORT_COLOR_EXPRESSION: ExpressionSpecification = [
   'match',
