@@ -9,18 +9,33 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
+from pmtiles.reader import MemorySource, Reader
 
 from skintrackr.models import ActivitySummary, Stream
 from skintrackr.tracks import (
     MAP_TRACKS_LIMIT,
+    MAX_ZOOM,
+    PREFILTER_MAX_TILES,
+    BBox,
+    Tile,
     TrackBuildError,
+    TrackFilters,
+    area_track_ids,
     build_pmtiles,
+    clip_line,
     encode_feature,
     feature_date,
     map_track_ids,
+    meets,
+    prefilter_margin_m,
+    prefilter_zoom,
+    split_at_gaps,
+    tiles_covering,
     track_feature,
 )
+from tests.conftest import requires_tippecanoe, tracks_archive
 
 ACTIVITY = ActivitySummary(id="i1", type="BackcountrySki", start_date_local="2025-02-03T08:00:00")
 # 1e-5 degrees of latitude is ~1.1 m
@@ -114,7 +129,7 @@ def test_map_track_ids_limit(count: int, omitted: int) -> None:
     assert f"i{count - 1}" in tracks.included and ("i0" in tracks.included) == (omitted == 0)
 
 
-@pytest.mark.skipif(shutil.which("tippecanoe") is None, reason="tippecanoe isn't installed (CI installs it)")
+@requires_tippecanoe
 def test_build_pmtiles() -> None:
     feature = track_feature(ACTIVITY, latlng([(47.0, -121.0), (47.001, -121.001), (47.002, -121.0)]))
     assert feature is not None
@@ -165,3 +180,153 @@ def test_build_pmtiles_cancelled_stops_tippecanoe(tmp_path: Path, monkeypatch: p
             time.sleep(0.05)
         else:
             pytest.fail("tippecanoe is still running")
+
+
+# --- areas, for exports
+
+BOX = BBox(0.0, 0.0, 1.0, 1.0)
+
+
+def line(*rows: tuple[float, ...]) -> np.ndarray:
+    return np.array(rows, dtype=float)
+
+
+def test_split_at_gaps_keeps_extra_columns() -> None:
+    # 1 km between the second and third fixes; the lone fix after another jump is dropped
+    lats = [47.0, 47.0001, 47.0101, 47.0102, 47.0302]
+    points = line(*((-121.0, lat, 1000.0 + i, i * 1000.0) for i, lat in enumerate(lats)))
+    runs = split_at_gaps(points)
+    assert [run[:, 3].tolist() for run in runs] == [[0.0, 1000.0], [2000.0, 3000.0]]
+
+
+@pytest.mark.parametrize(
+    ("points", "expected"),
+    [
+        # entirely inside: unchanged
+        (line((0.2, 0.2, 10, 0), (0.8, 0.8, 20, 10)), [[(0.2, 0.2, 10, 0), (0.8, 0.8, 20, 10)]]),
+        # entirely outside
+        (line((2, 2, 0, 0), (3, 3, 0, 0)), []),
+        # entering and leaving, with elevation and time interpolated on the edges
+        (
+            line((-1, 0.5, 100, 0), (0.5, 0.5, 200, 1500), (2, 0.5, 300, 3000)),
+            [[(0, 0.5, 100 + 100 * 2 / 3, 1000), (0.5, 0.5, 200, 1500), (1, 0.5, 200 + 100 / 3, 2000)]],
+        ),
+        # leaving and coming back: two pieces
+        (
+            line((0.5, 0.5, 0, 0), (0.5, 1.5, 0, 0), (0.6, 0.5, 0, 0)),
+            [[(0.5, 0.5, 0, 0), (0.5, 1, 0, 0)], [(0.55, 1, 0, 0), (0.6, 0.5, 0, 0)]],
+        ),
+        # a point exactly on an edge counts as inside
+        (line((1, 0.5, 0, 0), (0.5, 0.5, 0, 0)), [[(1, 0.5, 0, 0), (0.5, 0.5, 0, 0)]]),
+        # crossing the box with no point inside
+        (line((-1, -1, 0, 0), (2, 2, 3, 3)), [[(0, 0, 1, 1), (1, 1, 2, 2)]]),
+        # touching a corner only: no piece
+        (line((-1, 0, 0, 0), (0, 1, 0, 0), (-1, 2, 0, 0)), []),
+    ],
+)
+def test_clip_line(points: np.ndarray, expected: list[list[tuple[float, ...]]]) -> None:
+    pieces = clip_line(points, BOX)
+    assert len(pieces) == len(expected)
+    for piece, rows in zip(pieces, expected):
+        np.testing.assert_allclose(piece, np.array(rows, dtype=float))
+
+
+def test_clip_line_two_columns() -> None:
+    [piece] = clip_line(line((-1, 0.5), (0.5, 0.5)), BOX)
+    np.testing.assert_allclose(piece, [[0, 0.5], [0.5, 0.5]])
+
+
+def test_meets() -> None:
+    assert meets(line((-1, 0.5, 0), (2, 0.5, 0)), BOX)  # crosses, no point inside
+    assert meets(line((1, 0.5), (2, 0.5)), BOX)  # starts on the edge
+    assert not meets(line((1.1, 0.5), (2, 0.5)), BOX)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[], [0, 0, 1], [1, 0, 0, 1], [0, 1, 1, 0], [-181, 0, 0, 1], [0, 0, 1, 89], [0, 0, "1", 1], [0, 0, float("nan"), 1]],
+)
+def test_bbox_rejects_invalid_boxes(values: list) -> None:
+    with pytest.raises(ValueError):
+        BBox.from_list(values)
+
+
+def test_bbox_expanded() -> None:
+    box = BBox.from_list([-121.0, 47.0, -120.9, 47.1]).expanded(10)
+    assert box.south == pytest.approx(47.0 - 10 * METRE)
+    # at least 10 m of longitude at the box's northern edge
+    assert (-121.0 - box.west) * 111_320 * math.cos(math.radians(47.1 + 10 * METRE)) == pytest.approx(10)
+    assert BBox(-180, -85, 180, 85).expanded(10_000) == BBox(-180, -85.051129, 180, 85.051129)
+
+
+def test_prefilter_zoom() -> None:
+    assert prefilter_zoom(BBox(-121.01, 47.0, -121.0, 47.01)) == MAX_ZOOM
+    big = BBox(-121.5, 47.0, -120.8, 47.5)
+    zoom = prefilter_zoom(big)
+    assert zoom < MAX_ZOOM and len(tiles_covering(big, zoom)) <= PREFILTER_MAX_TILES < len(tiles_covering(big, zoom + 1))
+    assert prefilter_zoom(BBox(-180, -85, 180, 85)) == 3  # 8 x 8 tiles
+
+
+def test_tiles_covering() -> None:
+    # y counts down from the north
+    assert tiles_covering(BBox(-180, -85, 180, 85), 1) == [(1, 0, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]
+    assert tiles_covering(BBox(10, 10, 20, 20), 1) == [(1, 1, 0)]
+    assert tiles_covering(BBox(-20, -20, -10, -10), 2) == [(2, 1, 2)]
+
+
+def test_prefilter_margin() -> None:
+    # 2 m, plus 5 tile units: ~0.4 m each at z14 and 47°N, 8 times that at z11
+    assert prefilter_margin_m(14, 47) == pytest.approx(4.0, abs=0.1)
+    assert prefilter_margin_m(11, 47) == pytest.approx(18.3, abs=0.1)
+
+
+def archive_tiles(archive: bytes, tiles: list[Tile]) -> list[tuple[Tile, bytes]]:
+    reader = Reader(MemorySource(archive))
+    return [(tile, gzip.decompress(data)) for tile in tiles if (data := reader.get(*tile))]
+
+
+def feature(activity_id: str, points: list[tuple[float, float]], type: str = "BackcountrySki", day: str = "2025-02-03") -> dict[str, Any] | None:
+    activity = ActivitySummary(id=activity_id, type=type, start_date_local=f"{day}T08:00:00")
+    return track_feature(activity, latlng(points))
+
+
+def north(lon: float, lat: float, metres: float) -> list[tuple[float, float]]:
+    """(lat, lon) fixes 10 m apart heading north from (lon, lat), `metres` in all."""
+    count = int(metres / 10) + 1
+    return [(lat + i * metres / (count - 1) * METRE, lon) for i in range(count)]
+
+
+ALL = TrackFilters(sports=frozenset(), date_from=0, date_to=99991231)
+
+
+@requires_tippecanoe
+@pytest.mark.parametrize("size_m", [500, 50_000])  # read at z14, and at a lower zoom
+def test_area_track_ids_from_the_archive(size_m: float) -> None:
+    """The prefilter finds the tracks in an area from the server's own archive, at any zoom."""
+    west, south = -121.0, 47.0
+    east, top = west + size_m * METRE / math.cos(math.radians(47)), south + size_m * METRE
+    area = BBox(west, south, east, top)
+    edge = (south + top) / 2
+    archive = tracks_archive([
+        feature("inside", north(west + (east - west) / 2, south + (top - south) / 4, size_m / 4)),
+        # outside the east edge by 1 m: inside the margin, so it's a candidate (the exact test drops it later)
+        feature("near", north(east + METRE / math.cos(math.radians(edge)), edge, 30)),
+        feature("outside", north(east + 0.05, edge, 300)),
+        feature("run", north(west + (east - west) / 3, south + (top - south) / 3, 100), type="Run"),
+        feature("old", north(west + (east - west) / 5, south + (top - south) / 5, 100), day="2019-01-01"),
+    ])
+    zoom = prefilter_zoom(area)
+    grown = area.expanded(prefilter_margin_m(zoom, 47))
+    tiles = archive_tiles(archive, tiles_covering(grown, zoom))
+    assert set(area_track_ids(tiles, grown, ALL)) == {"inside", "near", "run", "old"}
+    filters = TrackFilters(sports=frozenset({"BackcountrySki"}), date_from=20200101, date_to=20251231)
+    assert area_track_ids(tiles, grown, filters) == ["near", "inside"]  # newest first, then by id
+
+
+def test_track_filters() -> None:
+    filters = TrackFilters(sports=frozenset({"Run"}), date_from=20250101, date_to=20251231)
+    assert filters.matches({"type": "Run", "date": 20250101})
+    assert not filters.matches({"type": "Run", "date": 20241231})
+    assert not filters.matches({"type": "Hike", "date": 20250601})
+    assert not filters.matches({"type": "Run"})
+    assert ALL.matches({"type": "Anything", "date": 1})

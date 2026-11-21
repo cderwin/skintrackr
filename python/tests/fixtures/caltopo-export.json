@@ -1,0 +1,80 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "id": "729f2bfd-d96f-5147-9f34-06ee938ce010",
+   "geometry": null,
+   "properties": {
+    "class": "Folder",
+    "title": "skintrackr exports",
+    "visible": true,
+    "labelVisible": true
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "f3382e1b-0a46-59be-8746-df1cb3ec61da",
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      0.00025,
+      0.0005
+     ],
+     [
+      0.0005,
+      0.0005
+     ]
+    ]
+   },
+   "properties": {
+    "class": "Shape",
+    "title": "2025-12-01 Old",
+    "description": "0.0 km \u00b7 0 m gain \u00b7 0:10 moving\nhttps://intervals.icu/activities/i1",
+    "stroke": "#FF0000",
+    "stroke-width": 3,
+    "stroke-opacity": 1,
+    "pattern": "solid",
+    "folderId": "729f2bfd-d96f-5147-9f34-06ee938ce010"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "7192fb34-f64f-5797-8e4c-5a53c2e065b0",
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      0.0005,
+      0.0005,
+      100,
+      0
+     ],
+     [
+      0.0015,
+      0.0005,
+      101,
+      1000
+     ],
+     [
+      0.00075,
+      0.0005,
+      102,
+      2000
+     ]
+    ]
+   },
+   "properties": {
+    "class": "Shape",
+    "title": "2026-01-04 Snoqualmie Mountain",
+    "description": "Backcountry ski\n7.7 mi \u00b7 4,049 ft gain \u00b7 4:05 moving\nhttps://intervals.icu/activities/i1001\nhttps://www.strava.com/activities/987",
+    "stroke": "#e11d48",
+    "stroke-width": 3,
+    "stroke-opacity": 1,
+    "pattern": "solid",
+    "folderId": "729f2bfd-d96f-5147-9f34-06ee938ce010"
+   }
+  }
+ ]
+}

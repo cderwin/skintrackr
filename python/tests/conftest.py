@@ -4,6 +4,7 @@ import asyncio
 import base64
 import gzip
 import json
+import shutil
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import timedelta
@@ -26,6 +27,7 @@ from skintrackr.crypto import generate_jwt
 from skintrackr.server.app import create_app
 from skintrackr.server.auth import SESSION_COOKIE
 from skintrackr.server.services import Services
+from skintrackr.tracks import build_pmtiles, encode_feature
 
 SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ATHLETE_ID = "i4242"
@@ -58,6 +60,22 @@ STREAMS = [
 ]
 
 API = "/api/v1"
+
+requires_tippecanoe = pytest.mark.skipif(shutil.which("tippecanoe") is None, reason="tippecanoe isn't installed (CI installs it)")
+
+
+def track_streams(points: list[tuple[float, float]], altitude: float = 1000.0) -> list[dict[str, Any]]:
+    """Streams as intervals.icu serves them for (lat, lon) fixes 1 s apart, climbing 1 m per fix."""
+    return [
+        {"type": "time", "data": list(range(len(points)))},
+        {"type": "latlng", "data": [lat for lat, _ in points], "data2": [lon for _, lon in points]},
+        {"type": "altitude", "data": [altitude + i for i in range(len(points))]},
+    ]
+
+
+def tracks_archive(features: list[dict[str, Any] | None]) -> bytes:
+    """A map archive (PMTiles) of track features, built with tippecanoe as the server builds it."""
+    return asyncio.run(build_pmtiles([encode_feature(f) for f in features if f is not None]))
 Route = Callable[[httpx.Request], httpx.Response]
 
 

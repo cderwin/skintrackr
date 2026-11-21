@@ -7,7 +7,19 @@ from botocore.exceptions import ClientError
 from skintrackr.clients.blob_store import READ_CONCURRENCY, BlobStore, InvalidRangeError, archive_keys, tracks_key
 from skintrackr.clients.intervals import IntervalsError
 from skintrackr.config import BlobStorageConfig
-from tests.conftest import ACTIVITY, ACTIVITY_ID, ATHLETE_ID, STREAMS, FakeBucket, FakeIntervals
+from skintrackr.models import ActivitySummary, Stream
+from skintrackr.tracks import MAX_ZOOM, track_feature
+from tests.conftest import (
+    ACTIVITY,
+    ACTIVITY_ID,
+    ATHLETE_ID,
+    STREAMS,
+    FakeBucket,
+    FakeIntervals,
+    requires_tippecanoe,
+    track_streams,
+    tracks_archive,
+)
 
 OTHER_ATHLETE = "i9999"
 
@@ -150,3 +162,19 @@ def test_build() -> None:
     assert store.bucket == "skintrackr-storage"
     assert store.s3.meta.endpoint_url == "https://t3.storage.dev"
     assert getattr(store.s3.meta.config, "max_pool_connections") >= READ_CONCURRENCY
+
+
+@requires_tippecanoe
+def test_read_track_tiles(bucket: FakeBucket) -> None:
+    # Seattle, in z14 tile (2624, 5722)
+    streams = [Stream(**stream) for stream in track_streams([(47.6062 + i * 1e-5, -122.3321) for i in range(20)])]
+    bucket.put(tracks_key(ATHLETE_ID), tracks_archive([track_feature(ActivitySummary(id="i1", type="Run"), streams)]))
+    seattle, empty = (MAX_ZOOM, 2624, 5722), (MAX_ZOOM, 0, 0)
+
+    tiles = asyncio.run(bucket.store.read_track_tiles(ATHLETE_ID, [seattle, empty]))
+    assert [tile for tile, _ in tiles] == [seattle]  # tiles without tracks aren't in the archive
+    assert tiles[0][1][:1] == b"\x1a"  # decompressed: a vector tile's first layer
+
+
+def test_read_track_tiles_without_an_archive(bucket: FakeBucket) -> None:
+    assert asyncio.run(bucket.store.read_track_tiles(ATHLETE_ID, [(MAX_ZOOM, 0, 0)])) == []

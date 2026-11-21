@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Self
 
 import boto3
 from attrs import frozen
+from pmtiles.reader import Reader
+from pmtiles.tile import Compression
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
@@ -28,7 +30,7 @@ from skintrackr.clients.intervals import IntervalsClient
 from skintrackr.config import BlobStorageConfig
 from skintrackr.logging import get_logger
 from skintrackr.models import Activity, ActivitySummary, Stream, loads
-from skintrackr.tracks import encode_feature, track_feature
+from skintrackr.tracks import Tile, encode_feature, track_feature
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -36,8 +38,10 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# concurrent reads when gathering an athlete's tracks
+# concurrent reads when gathering an athlete's tracks, or tiles from their archive
 READ_CONCURRENCY = 16
+# a PMTiles archive's header and root directory are always within its first 16 KiB
+PMTILES_ROOT_BYTES = 16_384
 # HTTP connections kept to the bucket: the track reads, plus the worker threads other calls run in
 MAX_CONNECTIONS = 32
 
@@ -148,6 +152,16 @@ class BlobStore:
             raise
         return response["Body"].read()
 
+    def _read_range(self, key: str, offset: int, length: int) -> bytes | None:
+        """Read `length` bytes of an object from `offset` (blocking); None if there's none at `key`."""
+        try:
+            response = self.s3.get_object(Bucket=self.bucket, Key=key, Range=f"bytes={offset}-{offset + length - 1}")
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") == "NoSuchKey":
+                return None
+            raise
+        return response["Body"].read()
+
     async def get(self, key: str) -> bytes | None:
         """Read an object; None if there's none at `key`."""
         return await asyncio.to_thread(self._read, key)
@@ -238,7 +252,10 @@ class BlobStore:
         activity, streams = await self.get(keys.activity), await self.get(keys.streams)
         if activity is None or streams is None:
             return None
-        return loads(gzip.decompress(activity), Activity), loads(gzip.decompress(streams), list[Stream])
+        # streams are megabytes of JSON: decode them off the event loop
+        return await asyncio.to_thread(
+            lambda: (loads(gzip.decompress(activity), Activity), loads(gzip.decompress(streams), list[Stream]))
+        )
 
     async def archived_activity_ids(self, athlete_id: str) -> set[str]:
         """Activities archived in full (their streams are written last)."""
@@ -263,6 +280,39 @@ class BlobStore:
         def read_all() -> list[bytes]:
             with ThreadPoolExecutor(READ_CONCURRENCY) as pool:
                 return [feature for feature in pool.map(read, activity_ids) if feature is not None]
+
+        return await asyncio.to_thread(read_all)
+
+    async def read_track_tiles(self, athlete_id: str, tiles: list[Tile]) -> list[tuple[Tile, bytes]]:
+        """Tiles of the athlete's map archive (`tracks.pmtiles`), decompressed, read with ranged reads.
+
+        Tiles with no tracks aren't in the archive, so they're left out, as is everything if there's no archive.
+        """
+        key = tracks_key(athlete_id)
+
+        def read_all() -> list[tuple[Tile, bytes]]:
+            root = self._read_range(key, 0, PMTILES_ROOT_BYTES)
+            if root is None:
+                return []
+            directories: dict[tuple[int, int], bytes] = {}
+
+            def get_bytes(offset: int, length: int) -> bytes:
+                # the header and root directory come from the first read; leaf directories are read once each
+                if offset + length <= len(root):
+                    return root[offset : offset + length]
+                if (offset, length) not in directories:
+                    directories[offset, length] = self._read_range(key, offset, length) or b""
+                return directories[offset, length]
+
+            reader = Reader(get_bytes)
+            gzipped = reader.header()["tile_compression"] == Compression.GZIP
+
+            def read(tile: Tile) -> tuple[Tile, bytes] | None:
+                data = reader.get(*tile)
+                return None if data is None else (tile, gzip.decompress(data) if gzipped else data)
+
+            with ThreadPoolExecutor(READ_CONCURRENCY) as pool:
+                return [found for found in pool.map(read, tiles) if found is not None]
 
         return await asyncio.to_thread(read_all)
 
