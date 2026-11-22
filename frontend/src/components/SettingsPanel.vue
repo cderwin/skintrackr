@@ -1,25 +1,24 @@
 <script setup lang="ts">
-// Settings, over the page: vert goal and units (saved in this browser), signing out, and disconnecting.
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+// The map's settings, under its button: units (saved in this browser), re-syncing activities, signing out, and
+// disconnecting.
+import { ref } from 'vue'
 import { X } from '@lucide/vue'
-import { api } from '@/api'
-import { fromUnits, settings, toUnits, type Units } from '@/settings'
+import { api, INTERVALS_SETTINGS_URL } from '@/api'
+import { settings, type Units } from '@/settings'
+import ImportPanel from '@/components/ImportPanel.vue'
 
 const emit = defineEmits<{ close: [] }>()
-const router = useRouter()
 
-const goal = computed({
-  get: () => Math.round(toUnits(settings.goalM)),
-  set: (value: number) => {
-    if (value > 0) settings.goalM = fromUnits(value)
-  },
-})
 const unitOptions: Units[] = ['ft', 'm']
+
+// a fresh load of the map, which has nothing of the athlete's left and opens with the connect modal
+function reload(): void {
+  window.location.assign('/map')
+}
 
 async function signOut(): Promise<void> {
   await api.logout().catch(() => undefined)
-  await router.push('/')
+  reload()
 }
 
 // disconnecting deletes everything, so it takes a second click to confirm
@@ -33,7 +32,7 @@ async function disconnect(): Promise<void> {
   disconnectError.value = ''
   try {
     await api.disconnect()
-    await router.push('/')
+    reload()
   } catch (e) {
     disconnectError.value = e instanceof Error ? e.message : String(e)
   }
@@ -41,32 +40,34 @@ async function disconnect(): Promise<void> {
 </script>
 
 <template>
-  <div class="backdrop" @click.self="emit('close')" @keydown.esc="emit('close')">
+  <div class="backdrop" @click.self="emit('close')">
     <section class="panel" role="dialog" aria-label="Settings">
       <header>
         <h2>Settings</h2>
         <button class="close" type="button" aria-label="Close settings" @click="emit('close')"><X :size="18" /></button>
       </header>
 
-      <label class="field">
-        <span>Yearly vert goal</span>
-        <span class="goal-row">
-          <input v-model.lazy.number="goal" type="number" min="1" step="1000" inputmode="numeric" />
-          <span class="units" role="radiogroup" aria-label="Units">
-            <button
-              v-for="option in unitOptions"
-              :key="option"
-              type="button"
-              role="radio"
-              :aria-checked="settings.units === option"
-              :class="{ active: settings.units === option }"
-              @click="settings.units = option"
-            >
-              {{ option }}
-            </button>
-          </span>
+      <div class="field">
+        <span>Units</span>
+        <span class="units" role="radiogroup" aria-label="Units">
+          <button
+            v-for="option in unitOptions"
+            :key="option"
+            type="button"
+            role="radio"
+            :aria-checked="settings.units === option"
+            :class="{ active: settings.units === option }"
+            @click="settings.units = option"
+          >
+            {{ option }}
+          </button>
         </span>
-      </label>
+      </div>
+
+      <div class="field">
+        <span>Activities</span>
+        <ImportPanel class="resync" />
+      </div>
 
       <button class="small-button align-start" type="button" @click="signOut">Sign out</button>
 
@@ -74,7 +75,8 @@ async function disconnect(): Promise<void> {
         <span>intervals.icu connection</span>
         <small>
           Disconnecting deletes your stored API key, archived activities and stats from this app. Your intervals.icu
-          account isn't changed.
+          account isn't changed. To revoke the key itself, generate a new one in your
+          <a class="brand-link" :href="INTERVALS_SETTINGS_URL" target="_blank" rel="noopener">intervals.icu settings</a>.
         </small>
         <span class="disconnect-row">
           <button class="small-button align-start danger" type="button" @click="disconnect">
@@ -98,7 +100,7 @@ async function disconnect(): Promise<void> {
   background: rgba(15, 23, 42, 0.55);
   display: flex;
   align-items: flex-start;
-  justify-content: flex-end;
+  justify-content: flex-start;
   padding: 20px;
 }
 
@@ -108,6 +110,8 @@ async function disconnect(): Promise<void> {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
   width: 100%;
   max-width: 380px;
+  max-height: 100%;
+  overflow-y: auto;
   padding: 24px;
   display: flex;
   flex-direction: column;
@@ -154,21 +158,8 @@ h2 {
   color: #b91c1c;
 }
 
-.goal-row {
-  display: flex;
-  gap: 8px;
-}
-
-.goal-row input {
-  flex: 1;
-  min-width: 0;
-  font-size: 15px;
-  padding: 10px 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-}
-
 .units {
+  align-self: flex-start;
   display: flex;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -178,7 +169,7 @@ h2 {
 .units button {
   border: none;
   background: white;
-  padding: 0 14px;
+  padding: 8px 16px;
   font-weight: 600;
   color: #334155;
   cursor: pointer;
@@ -187,6 +178,11 @@ h2 {
 .units button.active {
   background: #1e3a5f;
   color: white;
+}
+
+.resync {
+  margin-top: 0;
+  font-weight: 400;
 }
 
 .align-start {

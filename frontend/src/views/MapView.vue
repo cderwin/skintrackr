@@ -2,14 +2,16 @@
 // A full-page 3D terrain map (MapTiler Outdoor, or satellite imagery, on a terrain-RGB DEM), centered on the
 // Washington Cascades, with the athlete's activity tracks (their PMTiles archive) colored by sport. Clicking a track
 // opens its details; the filter panel narrows tracks by sport and date; the area button draws a box whose tracks
-// download for CalTopo.
+// download for CalTopo. Settings and the season's stats open over it; the stats are in the URL (`/map?stats`).
+// Signed out, it's behind the connect modal, which only connecting closes.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre looks for its worker next to its own module, which the bundle doesn't keep; emit it as an asset
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import { Protocol } from 'pmtiles'
-import { ArrowLeft, SquareDashedMousePointer, X } from '@lucide/vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ChartLine, Settings, SquareDashedMousePointer, X } from '@lucide/vue'
 import { api, SignedOutError, TRACKS_URL, useSignedIn, type ActivitySummary, type BBox, type MapActivities } from '@/api'
 import { AreaSelect } from '@/areaSelect'
 import { filterExpression, matches } from '@/mapFilters'
@@ -17,8 +19,12 @@ import { settings } from '@/settings'
 import { SPORT_COLOR_EXPRESSION } from '@/sports'
 import ActivityPopup from '@/components/ActivityPopup.vue'
 import ExportDialog from '@/components/ExportDialog.vue'
+import ConnectModal from '@/components/ConnectModal.vue'
 import FloatingButton from '@/components/FloatingButton.vue'
+import ImportNotice from '@/components/ImportNotice.vue'
 import MapFilters from '@/components/MapFilters.vue'
+import SettingsPanel from '@/components/SettingsPanel.vue'
+import StatsModal from '@/components/StatsModal.vue'
 
 const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_KEY ?? ''
 const CASCADES: [number, number] = [-121.4, 47.9]
@@ -59,6 +65,24 @@ const area = ref<BBox | null>(null)
 const exportIds = ref<string[]>([])
 const focusId = ref<string | null>(null)
 const filtersOpen = ref(false)
+const showSettings = ref(false)
+
+// the stats modal, open while the URL has `?stats`
+const route = useRoute()
+const router = useRouter()
+const showStats = computed(() => 'stats' in route.query)
+function openStats(): void {
+  showSettings.value = false
+  filtersOpen.value = false
+  endArea()
+  void router.push({ query: { ...route.query, stats: null } })
+}
+function closeStats(): void {
+  const { stats: _, ...query } = route.query
+  // opened from the map: going back closes it, so the browser's back button agrees; opened by its URL: drop `?stats`
+  if (window.history.state?.back === router.resolve({ query }).fullPath) router.back()
+  else void router.replace({ query })
+}
 // after a download: how many tracks, for the import instructions shown briefly
 const downloaded = ref(0)
 let downloadedTimer: ReturnType<typeof setTimeout> | undefined
@@ -89,7 +113,12 @@ onMounted(() => {
     maxPitch: 85,
   })
   map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right')
-  map.addControl(new maplibregl.ScaleControl({ unit: settings.units === 'ft' ? 'imperial' : 'metric' }))
+  const scale = new maplibregl.ScaleControl({ unit: scaleUnit() })
+  map.addControl(scale)
+  watch(
+    () => settings.units,
+    () => scale.setUnit(scaleUnit()),
+  )
   map.on('load', () => {
     map?.addSource('terrain', {
       type: 'raster-dem',
@@ -109,9 +138,16 @@ onMounted(() => {
   window.addEventListener('keydown', closeOnEscape)
 })
 
+function scaleUnit(): 'imperial' | 'metric' {
+  return settings.units === 'ft' ? 'imperial' : 'metric'
+}
+
 function closeOnEscape(event: KeyboardEvent): void {
   if (event.key !== 'Escape') return
-  if (areaMode.value) endArea()
+  if (showStats.value) closeStats()
+  else if (showSettings.value) showSettings.value = false
+  else if (filtersOpen.value) filtersOpen.value = false
+  else if (areaMode.value) endArea()
   else popup?.remove()
 }
 
@@ -265,6 +301,11 @@ function addTracks(m: maplibregl.Map): void {
   })
   m.on('click', (event) => {
     if (areaMode.value) return // the clicks draw an area
+    // a click on the map closes the filter panel, like the other panels (panning still leaves it open)
+    if (filtersOpen.value) {
+      filtersOpen.value = false
+      return
+    }
     const found = [...tracksAt(m, event.point)]
       .flatMap((id) => byId.value.get(id) ?? [])
       .sort((a, b) => b.start_date_local.localeCompare(a.start_date_local))
@@ -318,8 +359,8 @@ watch(
 )
 watch(selectedId, applyFilters)
 
-watch(signedIn, async (value) => {
-  if (!value || !MAPTILER_KEY) return
+/** Load the athlete's activities, and draw (or redraw) their tracks. */
+async function loadActivities(): Promise<void> {
   try {
     data.value = await api.activities()
   } catch (e) {
@@ -328,10 +369,33 @@ watch(signedIn, async (value) => {
     return
   }
   await mapLoaded
-  if (map && data.value.on_map.length) addTracks(map)
+  if (!map || !data.value.on_map.length) return
+  const source = map.getSource<maplibregl.VectorTileSource>(LAYER)
+  // a new URL (the server ignores the query) makes MapLibre and the PMTiles client fetch the tracks afresh
+  if (source) source.setUrl(`pmtiles://${TRACKS_URL}?v=${++tracksReloads}`)
+  else addTracks(map)
+}
+let tracksReloads = 0
+
+watch(signedIn, (value) => {
+  if (value && MAPTILER_KEY) void loadActivities()
 })
 
+// the tracks file is rebuilt in the background after an import finishes: reload now, then again once it changes
+const TRACKS_POLL_MS = 3000
+const TRACKS_POLL_TRIES = 40
+let unmounted = false
+async function onImportFinished(): Promise<void> {
+  const before = await api.tracksVersion()
+  await loadActivities()
+  for (let i = 0; i < TRACKS_POLL_TRIES && !unmounted; i++) {
+    await new Promise((resolve) => setTimeout(resolve, TRACKS_POLL_MS))
+    if (!unmounted && (await api.tracksVersion()) !== before) return loadActivities()
+  }
+}
+
 onBeforeUnmount(() => {
+  unmounted = true
   window.removeEventListener('keydown', closeOnEscape)
   clearTimeout(downloadedTimer)
   popup?.remove()
@@ -345,13 +409,14 @@ onBeforeUnmount(() => {
     The map needs a MapTiler key: set <code>VITE_MAPTILER_KEY</code> and rebuild the frontend.
   </div>
   <template v-else>
-    <div v-if="signedIn === false" class="notice bottom">
-      <RouterLink to="/connect">Connect intervals.icu</RouterLink> to see your activities on the map.
-    </div>
+    <ConnectModal v-if="signedIn === false" @connected="signedIn = true" />
     <div v-else-if="loadError" class="notice bottom failed">Couldn't load your activities: {{ loadError }}</div>
-    <div v-else-if="data && !data.on_map.length" class="notice bottom">
-      No tracks yet. <RouterLink to="/">Import your activities</RouterLink> to see them here.
-    </div>
+    <ImportNotice
+      v-else-if="data"
+      class="notice bottom"
+      :has-tracks="data.on_map.length > 0"
+      @finished="onImportFinished"
+    />
     <template v-if="data?.on_map.length">
       <MapFilters v-model:open="filtersOpen" :activities="onMap" :omitted="data.map_tracks_omitted" />
       <FloatingButton
@@ -383,7 +448,12 @@ onBeforeUnmount(() => {
       @downloaded="onDownloaded"
     />
   </template>
-  <FloatingButton side="left" to="/" label="Back"><ArrowLeft /></FloatingButton>
+  <template v-if="signedIn">
+    <FloatingButton side="left" label="Settings" @click="showSettings = true"><Settings /></FloatingButton>
+    <FloatingButton side="left" :offset="1" label="Season stats" @click="openStats"><ChartLine /></FloatingButton>
+    <SettingsPanel v-if="showSettings" @close="showSettings = false" />
+    <StatsModal v-if="showStats" @close="closeStats" />
+  </template>
   <Teleport v-if="candidates.length" :to="popupContent">
     <ActivityPopup :activities="candidates" :selected-id="selectedId" @select="selectedId = $event" />
   </Teleport>
@@ -471,11 +541,6 @@ onBeforeUnmount(() => {
   color: #64748b;
   font: inherit;
   cursor: pointer;
-}
-
-.notice a {
-  color: #ea580c;
-  font-weight: 600;
 }
 
 .failed {

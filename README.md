@@ -7,7 +7,7 @@ API key (stored encrypted in Redis); a JWT-authenticated API also exports activi
 | Directory | |
 | --- | --- |
 | [`python/`](python/README.md) | The backend: Litestar server and CLI (uv project). Configuration, routes and layout are in its README. |
-| `frontend/` | The frontend: a Vue 3 + Vite + TypeScript SPA (landing page, season vert stats, 3D terrain map). The server serves its build (`frontend/dist`) in production. |
+| `frontend/` | The frontend: a Vue 3 + Vite + TypeScript SPA (a 3D terrain map of the athlete's tracks, with season vert stats, settings and connecting over it). The server serves its build (`frontend/dist`) in production. |
 
 ## Commands
 
@@ -27,7 +27,7 @@ just web-dev    # frontend dev server with hot reload on :5173 (proxies server r
 ```sh
 cp .env.example .env   # then set APP_SECRET (openssl rand -hex 32) and VITE_MAPTILER_KEY for the map
                        # (https://cloud.maptiler.com/account/keys/); athletes connect with their own
-                       # intervals.icu API key on /connect
+                       # intervals.icu API key on the map
 just py-sync
 just web-install
 just dev-up            # or: `just deps-up`, `just web-build` and `just py-serve`

@@ -192,6 +192,13 @@ export const api = {
     const count = Number(response.headers.get('X-Track-Count') ?? 0)
     return { ...(await download(response, 'skintrackr-tracks.json')), count }
   },
+  /** The map tracks' version (their ETag, which every rebuild changes); null before the athlete has any. */
+  tracksVersion: async (): Promise<string | null> => {
+    const response = await fetch(TRACKS_URL, { credentials: 'same-origin', headers: { Range: 'bytes=0-0' } }).catch(
+      () => null,
+    )
+    return response?.ok ? response.headers.get('ETag') : null
+  },
   logout: () => call<{ ok: boolean }>('POST', '/auth/logout'),
   /** Delete everything stored for the athlete, and sign out. */
   disconnect: () => call<{ ok: boolean }>('POST', '/auth/disconnect'),

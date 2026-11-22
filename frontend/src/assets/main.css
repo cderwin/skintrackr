@@ -6,72 +6,18 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  background: linear-gradient(to bottom, #0f172a 0%, #1e3a5f 50%, #2d5a7b 100%);
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  overflow-x: hidden;
+  /* behind the map until it draws */
+  background: #1e293b;
 }
 
-#app {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-}
-
-/* Mountain silhouette background */
-body::before {
-  content: '';
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 60%;
-  background:
-    linear-gradient(to top, rgba(15, 23, 42, 0.9) 0%, transparent 100%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1200 400'%3E%3Cpath fill='%23000000' fill-opacity='0.3' d='M0,400 L0,200 L200,100 L400,180 L600,60 L800,140 L1000,80 L1200,160 L1200,400 Z'/%3E%3Cpath fill='%23000000' fill-opacity='0.2' d='M0,400 L0,240 L150,160 L350,220 L550,120 L750,200 L950,140 L1200,220 L1200,400 Z'/%3E%3C/svg%3E")
-      center bottom / cover no-repeat;
-  pointer-events: none;
-}
-
-/* Falling snow animation */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background-image:
-    radial-gradient(2px 2px at 20% 30%, white, transparent),
-    radial-gradient(2px 2px at 60% 70%, white, transparent),
-    radial-gradient(1px 1px at 50% 50%, white, transparent),
-    radial-gradient(1px 1px at 80% 10%, white, transparent),
-    radial-gradient(2px 2px at 90% 60%, white, transparent),
-    radial-gradient(1px 1px at 33% 80%, white, transparent),
-    radial-gradient(1px 1px at 15% 90%, white, transparent);
-  background-size: 200% 200%;
-  animation: snow 20s linear infinite reverse;
-  opacity: 0.6;
-  pointer-events: none;
-}
-
-@keyframes snow {
-  0% {
-    background-position: 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%, 0% 0%;
-  }
-  100% {
-    background-position: 0% 200%, 0% 200%, 0% 200%, 0% 200%, 0% 200%, 0% 200%, 0% 200%;
-  }
-}
-
-/* Shared by the pages */
+/* Shared by the map's panels and modals */
 .brand-link {
   color: #c2410c;
   text-decoration: none;
   font-weight: 600;
 }
 
-/* full-width call to action, e.g. Connect intervals.icu */
+/* full-width call to action: Connect */
 .big-button {
   padding: 18px 36px;
   font-size: 18px;
@@ -80,11 +26,7 @@ body::after {
   width: 100%;
   transition: all 0.3s ease;
   letter-spacing: 0.3px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  text-decoration: none;
+  cursor: pointer;
 }
 
 /* a Lucide icon at the size of the text around it */
@@ -92,12 +34,6 @@ body::after {
   flex: none;
   width: 1em;
   height: 1em;
-}
-
-.big-button svg {
-  flex: none;
-  width: 24px;
-  height: 24px;
 }
 
 .big-button:hover {
@@ -127,7 +63,6 @@ body::after {
   box-shadow: 0 6px 24px rgba(255, 107, 53, 0.6);
 }
 
-.button-secondary,
 .small-button:not(.button-primary) {
   background: white;
   color: #1e3a5f;

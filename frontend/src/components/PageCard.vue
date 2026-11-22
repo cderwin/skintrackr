@@ -1,32 +1,25 @@
 <script setup lang="ts">
-// The card every page is laid out in: icon, title, subtitle, an optional ❄️ feature list, then the page's own
-// content and an optional disclaimer.
+// The card the map's modals are laid out in: icon, title and subtitle, then the modal's own content. With an
+// `aside` slot it's wider, in two columns (the aside on the right), down to one column on narrow screens.
 import type { Component } from 'vue'
-import { Snowflake } from '@lucide/vue'
 
 defineProps<{
-  /** A Lucide icon (or one of `src/icons.ts`). */
+  /** A Lucide icon. */
   icon: Component
   title: string
   subtitle: string
-  features?: string[]
-  success?: boolean
 }>()
 </script>
 
 <template>
-  <main class="card">
-    <div class="icon" :class="{ success }"><component :is="icon" :size="40" :stroke-width="1.75" /></div>
-    <h1>{{ title }}</h1>
-    <p class="subtitle">{{ subtitle }}</p>
-
-    <ul v-if="features" class="features">
-      <li v-for="feature in features" :key="feature"><Snowflake class="bullet" :size="20" />{{ feature }}</li>
-    </ul>
-
-    <slot />
-
-    <p v-if="$slots.disclaimer" class="disclaimer"><slot name="disclaimer" /></p>
+  <main class="card" :class="{ split: $slots.aside }">
+    <div class="primary">
+      <div class="icon"><component :is="icon" :size="40" :stroke-width="1.75" /></div>
+      <h1>{{ title }}</h1>
+      <p class="subtitle">{{ subtitle }}</p>
+      <slot />
+    </div>
+    <aside v-if="$slots.aside" class="aside"><slot name="aside" /></aside>
   </main>
 </template>
 
@@ -43,6 +36,26 @@ defineProps<{
   position: relative;
   z-index: 10;
   animation: slide-up 0.6s ease-out;
+}
+
+.card.split {
+  max-width: 860px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+  align-items: start;
+}
+
+.aside {
+  text-align: left;
+}
+
+@media (max-width: 900px) {
+  .card.split {
+    max-width: 480px;
+    grid-template-columns: 1fr;
+    gap: 32px;
+  }
 }
 
 @keyframes slide-up {
@@ -69,11 +82,6 @@ defineProps<{
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
-.icon.success {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
-}
-
 h1 {
   font-size: 32px;
   font-weight: 700;
@@ -87,34 +95,6 @@ h1 {
   color: #475569;
   margin-bottom: 32px;
   line-height: 1.6;
-}
-
-.features {
-  list-style: none;
-  text-align: left;
-  margin-bottom: 32px;
-  padding: 0 8px;
-}
-
-.features li {
-  display: flex;
-  align-items: center;
-  margin-bottom: 16px;
-  font-size: 15px;
-  color: #334155;
-}
-
-.bullet {
-  flex: none;
-  margin-right: 12px;
-  color: #2d5a7b;
-}
-
-.disclaimer {
-  margin-top: 24px;
-  font-size: 13px;
-  color: #64748b;
-  line-height: 1.5;
 }
 
 @media (max-width: 520px) {
