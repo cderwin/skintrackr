@@ -9,6 +9,7 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 // MapLibre looks for its worker next to its own module, which the bundle doesn't keep; emit it as an asset
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import { Protocol } from 'pmtiles'
+import { ArrowLeft, SquareDashedMousePointer, X } from '@lucide/vue'
 import { api, SignedOutError, TRACKS_URL, useSignedIn, type ActivitySummary, type BBox, type MapActivities } from '@/api'
 import { AreaSelect } from '@/areaSelect'
 import { filterExpression, matches } from '@/mapFilters'
@@ -359,18 +360,15 @@ onBeforeUnmount(() => {
         :label="areaMode ? 'Cancel export' : 'Export an area to CalTopo'"
         @click="areaMode ? endArea() : startArea()"
       >
-        <span v-if="areaMode" aria-hidden="true">✕</span>
-        <svg v-else class="area-icon" viewBox="0 0 22 22" aria-hidden="true">
-          <rect x="3" y="4" width="13" height="10" stroke-dasharray="2.2 1.6" />
-          <path d="M12 11l1.7 8 1.6-2.9 3.3-.4z" />
-        </svg>
+        <X v-if="areaMode" />
+        <SquareDashedMousePointer v-else />
       </FloatingButton>
     </template>
     <div v-if="areaMode && !area" class="notice top">Click two corners of the area · Esc to cancel</div>
     <div v-if="downloaded" class="notice top" role="status">
       Downloaded {{ downloaded.toLocaleString() }} {{ downloaded === 1 ? 'track' : 'tracks' }}. In CalTopo, open a map,
       choose <strong>Import</strong> at the top of the sidebar, and pick the file.
-      <button type="button" class="dismiss" aria-label="Dismiss" @click="downloaded = 0">✕</button>
+      <button type="button" class="dismiss" aria-label="Dismiss" @click="downloaded = 0"><X class="icon-em" /></button>
     </div>
     <ExportDialog
       v-if="area && data"
@@ -385,7 +383,7 @@ onBeforeUnmount(() => {
       @downloaded="onDownloaded"
     />
   </template>
-  <FloatingButton side="left" to="/" label="Back">←</FloatingButton>
+  <FloatingButton side="left" to="/" label="Back"><ArrowLeft /></FloatingButton>
   <Teleport v-if="candidates.length" :to="popupContent">
     <ActivityPopup :activities="candidates" :selected-id="selectedId" @select="selectedId = $event" />
   </Teleport>
@@ -413,25 +411,11 @@ onBeforeUnmount(() => {
 
 /* the satellite toggle's icon, in the terrain button's colors (grey, blue when on) */
 .map :deep(.satellite-toggle .maplibregl-ctrl-icon) {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%23333' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23333' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m13.5 6.5-3.148-3.148a1.205 1.205 0 0 0-1.704 0L6.352 5.648a1.205 1.205 0 0 0 0 1.704L9.5 10.5'/%3E%3Cpath d='M16.5 7.5 19 5'/%3E%3Cpath d='m17.5 10.5 3.148 3.148a1.205 1.205 0 0 1 0 1.704l-2.296 2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5'/%3E%3Cpath d='M9 21a6 6 0 0 0-6-6'/%3E%3Cpath d='M9.352 10.648a1.205 1.205 0 0 0 0 1.704l2.296 2.296a1.205 1.205 0 0 0 1.704 0l4.296-4.296a1.205 1.205 0 0 0 0-1.704l-2.296-2.296a1.205 1.205 0 0 0-1.704 0z'/%3E%3C/svg%3E");
 }
 
 .map :deep(.satellite-toggle.satellite-enabled .maplibregl-ctrl-icon) {
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 22 22' fill='none' stroke='%2333b5e5' stroke-width='1.4' stroke-linejoin='round'%3E%3Cg transform='rotate(-45 11 11)'%3E%3Crect x='8.5' y='8.5' width='5' height='5'/%3E%3Crect x='1.5' y='9' width='5' height='4'/%3E%3Crect x='15.5' y='9' width='5' height='4'/%3E%3Cpath d='M6.5 11h2m5 0h2M11 13.5V16m-2.5 1.5a2.5 2.5 0 0 0 5 0'/%3E%3C/g%3E%3C/svg%3E");
-}
-
-/* the export button's icon: a dashed box and a pointer */
-.area-icon {
-  width: 24px;
-  height: 24px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linejoin: round;
-}
-
-.area-icon path {
-  fill: currentColor;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%2333b5e5' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m13.5 6.5-3.148-3.148a1.205 1.205 0 0 0-1.704 0L6.352 5.648a1.205 1.205 0 0 0 0 1.704L9.5 10.5'/%3E%3Cpath d='M16.5 7.5 19 5'/%3E%3Cpath d='m17.5 10.5 3.148 3.148a1.205 1.205 0 0 1 0 1.704l-2.296 2.296a1.205 1.205 0 0 1-1.704 0L13.5 14.5'/%3E%3Cpath d='M9 21a6 6 0 0 0-6-6'/%3E%3Cpath d='M9.352 10.648a1.205 1.205 0 0 0 0 1.704l2.296 2.296a1.205 1.205 0 0 0 1.704 0l4.296-4.296a1.205 1.205 0 0 0 0-1.704l-2.296-2.296a1.205 1.205 0 0 0-1.704 0z'/%3E%3C/svg%3E");
 }
 
 .map :deep(.maplibregl-popup-close-button:hover) {
@@ -477,6 +461,9 @@ onBeforeUnmount(() => {
 }
 
 .notice .dismiss {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
   margin-left: 6px;
   padding: 0 4px;
   border: none;

@@ -2,6 +2,7 @@
 // Settings, over the page: vert goal and units (saved in this browser), signing out, and disconnecting.
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { X } from '@lucide/vue'
 import { api } from '@/api'
 import { fromUnits, settings, toUnits, type Units } from '@/settings'
 
@@ -44,7 +45,7 @@ async function disconnect(): Promise<void> {
     <section class="panel" role="dialog" aria-label="Settings">
       <header>
         <h2>Settings</h2>
-        <button class="close" type="button" aria-label="Close settings" @click="emit('close')">✕</button>
+        <button class="close" type="button" aria-label="Close settings" @click="emit('close')"><X :size="18" /></button>
       </header>
 
       <label class="field">
@@ -126,9 +127,11 @@ h2 {
 }
 
 .close {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
   border: none;
   background: none;
-  font-size: 18px;
   color: #64748b;
   cursor: pointer;
 }

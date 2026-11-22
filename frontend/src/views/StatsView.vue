@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { ArrowLeft, Mountain, Settings } from '@lucide/vue'
 import { api, SignedOutError, type VertStats } from '@/api'
 import { formatVert, settings } from '@/settings'
 import ConnectButton from '@/components/ConnectButton.vue'
@@ -47,15 +48,15 @@ const CIRCUMFERENCE = 2 * Math.PI * RADIUS
 </script>
 
 <template>
-  <FloatingButton side="left" to="/" label="Back">←</FloatingButton>
-  <FloatingButton v-if="!signedOut" side="right" label="Settings" @click="showSettings = true">⚙️</FloatingButton>
+  <FloatingButton side="left" to="/" label="Back"><ArrowLeft /></FloatingButton>
+  <FloatingButton v-if="!signedOut" side="right" label="Settings" @click="showSettings = true"><Settings /></FloatingButton>
   <SettingsPanel v-if="showSettings" @close="showSettings = false" />
 
-  <PageCard v-if="signedOut" icon="⛰️" title="Season vert" subtitle="Connect your intervals.icu account to see your stats">
+  <PageCard v-if="signedOut" :icon="Mountain" title="Season vert" subtitle="Connect your intervals.icu account to see your stats">
     <ConnectButton />
   </PageCard>
 
-  <PageCard v-else icon="⛰️" title="Season vert" :subtitle="subtitle || 'Loading your activities…'">
+  <PageCard v-else :icon="Mountain" title="Season vert" :subtitle="subtitle || 'Loading your activities…'">
     <p v-if="error" class="error">{{ error }}</p>
 
     <p v-else-if="stats && !stats.activities" class="empty">

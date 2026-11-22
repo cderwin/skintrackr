@@ -1,8 +1,12 @@
 <script setup lang="ts">
 // The card every page is laid out in: icon, title, subtitle, an optional ❄️ feature list, then the page's own
 // content and an optional disclaimer.
+import type { Component } from 'vue'
+import { Snowflake } from '@lucide/vue'
+
 defineProps<{
-  icon: string
+  /** A Lucide icon (or one of `src/icons.ts`). */
+  icon: Component
   title: string
   subtitle: string
   features?: string[]
@@ -12,12 +16,12 @@ defineProps<{
 
 <template>
   <main class="card">
-    <div class="icon" :class="{ success }">{{ icon }}</div>
+    <div class="icon" :class="{ success }"><component :is="icon" :size="40" :stroke-width="1.75" /></div>
     <h1>{{ title }}</h1>
     <p class="subtitle">{{ subtitle }}</p>
 
     <ul v-if="features" class="features">
-      <li v-for="feature in features" :key="feature">{{ feature }}</li>
+      <li v-for="feature in features" :key="feature"><Snowflake class="bullet" :size="20" />{{ feature }}</li>
     </ul>
 
     <slot />
@@ -61,14 +65,13 @@ defineProps<{
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 40px;
+  color: white;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .icon.success {
   background: linear-gradient(135deg, #10b981 0%, #059669 100%);
   box-shadow: 0 4px 12px rgba(16, 185, 129, 0.4);
-  color: white;
 }
 
 h1 {
@@ -101,10 +104,10 @@ h1 {
   color: #334155;
 }
 
-.features li::before {
-  content: '❄️';
+.bullet {
+  flex: none;
   margin-right: 12px;
-  font-size: 20px;
+  color: #2d5a7b;
 }
 
 .disclaimer {

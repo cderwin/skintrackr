@@ -53,6 +53,11 @@ const position = computed(() => ({ [props.side]: `${20 + (props.offset ?? 0) * 6
   transition: transform 0.2s ease;
 }
 
+.floating .lucide {
+  width: 22px;
+  height: 22px;
+}
+
 .floating:hover {
   transform: translateY(-2px);
 }

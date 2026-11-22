@@ -2,6 +2,7 @@
 // A clicked track's details, inside the map's popup. Where tracks overlap, the others under the click are listed
 // below (the newest `LIMIT`, with a count of the rest), to switch between them.
 import { computed } from 'vue'
+import { Download, ExternalLink } from '@lucide/vue'
 import { gpxExportUrl, intervalsActivityUrl, stravaActivityUrl, type ActivitySummary } from '@/api'
 import { formatDate, formatDistance, formatVert } from '@/settings'
 import { sportColor, sportLabel } from '@/sports'
@@ -39,9 +40,9 @@ const count = computed(() =>
       <dd>{{ formatVert(activity.total_elevation_gain) }}</dd>
     </dl>
     <div class="links">
-      <a :href="gpxExportUrl(activity.id)" download>GPX ↓</a>
-      <a :href="intervalsActivityUrl(activity.id)" target="_blank" rel="noopener noreferrer">intervals.icu ↗</a>
-      <a v-if="activity.strava_id" :href="stravaActivityUrl(activity.strava_id)" target="_blank" rel="noopener noreferrer">Strava ↗</a>
+      <a :href="gpxExportUrl(activity.id)" download>GPX<Download class="icon-em" /></a>
+      <a :href="intervalsActivityUrl(activity.id)" target="_blank" rel="noopener noreferrer">intervals.icu<ExternalLink class="icon-em" /></a>
+      <a v-if="activity.strava_id" :href="stravaActivityUrl(activity.strava_id)" target="_blank" rel="noopener noreferrer">Strava<ExternalLink class="icon-em" /></a>
     </div>
 
     <div v-if="activities.length > 1" class="others">
@@ -104,6 +105,17 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 14px;
+}
+
+.links a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.links .icon-em {
+  width: 0.9em;
+  height: 0.9em;
 }
 
 a {
