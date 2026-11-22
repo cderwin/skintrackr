@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useSignedIn } from '@/api'
+import { Skier } from '@/icons'
 import AppLinks from '@/components/AppLinks.vue'
 import ConnectButton from '@/components/ConnectButton.vue'
 import ImportPanel from '@/components/ImportPanel.vue'
@@ -15,7 +16,7 @@ const features = [
 
 <template>
   <PageCard
-    icon="⛷️"
+    :icon="Skier"
     title="Backcountry Ski Tracker"
     subtitle="Automatically track your backcountry ski adventures from intervals.icu"
     :features="features"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Check } from '@lucide/vue'
 import { INTERVALS_SETTINGS_URL } from '@/api'
 import AppLinks from '@/components/AppLinks.vue'
 import ImportPanel from '@/components/ImportPanel.vue'
@@ -13,7 +14,7 @@ const features = [
 
 <template>
   <PageCard
-    icon="✓"
+    :icon="Check"
     title="Successfully Connected!"
     subtitle="Your intervals.icu account is connected to Backcountry Ski Tracker"
     :features="features"

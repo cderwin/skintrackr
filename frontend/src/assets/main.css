@@ -83,11 +83,19 @@ body::after {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 6px;
   text-decoration: none;
 }
 
+/* a Lucide icon at the size of the text around it */
+.icon-em {
+  flex: none;
+  width: 1em;
+  height: 1em;
+}
+
 .big-button svg {
+  flex: none;
   width: 24px;
   height: 24px;
 }

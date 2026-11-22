@@ -4,6 +4,7 @@
 // CalTopo imports. It reports the ticked tracks with `preview` (the map highlights them), the hovered one with
 // `focus`, and a download with `downloaded` (which closes it). It sits just below the map's export button.
 import { computed, ref, watch } from 'vue'
+import { ChevronRight } from '@lucide/vue'
 import {
   api,
   MAP_TRACKS_LIMIT,
@@ -173,8 +174,8 @@ const tracks = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'track' : 'trac
 
     <div v-if="state === 'ready' || state === 'preparing'" class="choose">
       <div class="choose-bar">
-        <button type="button" class="link" :aria-expanded="listOpen" @click="listOpen = !listOpen">
-          {{ listOpen ? '▾' : '▸' }} Choose tracks
+        <button type="button" class="link disclosure" :aria-expanded="listOpen" @click="listOpen = !listOpen">
+          <ChevronRight class="chevron icon-em" :class="{ open: listOpen }" />Choose tracks
         </button>
         <span v-if="listOpen" class="all-none">
           <button type="button" class="link" :disabled="state === 'preparing'" @click="tickAll(true)">All</button>
@@ -295,6 +296,20 @@ h3 {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chevron {
+  transition: transform 0.15s ease;
+}
+
+.chevron.open {
+  transform: rotate(90deg);
 }
 
 .link:disabled {

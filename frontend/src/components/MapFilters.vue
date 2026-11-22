@@ -2,6 +2,7 @@
 // The map's filter panel: sports and a period (calendar years, the last 12 months, or a custom range). Edits
 // `settings.mapFilters`, which the map applies; counts the activities on the map that pass.
 import { computed } from 'vue'
+import { Funnel, X } from '@lucide/vue'
 import { MAP_TRACKS_LIMIT, type ActivitySummary } from '@/api'
 import { isFiltered, matches } from '@/mapFilters'
 import { settings, type MapPeriod } from '@/settings'
@@ -53,7 +54,8 @@ function reset(): void {
 
 <template>
   <FloatingButton side="right" :label="open ? 'Close filters' : 'Filter activities'" @click="open = !open">
-    <span aria-hidden="true">{{ open ? '✕' : '⚲' }}</span>
+    <X v-if="open" />
+    <Funnel v-else />
     <span v-if="!open && isFiltered(filters)" class="badge" aria-hidden="true" />
   </FloatingButton>
 

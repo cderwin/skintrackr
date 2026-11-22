@@ -2,6 +2,7 @@
 // Connecting an intervals.icu account by its API key, with why intervals.icu, how to set it up, and what syncs.
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ArrowLeft, KeyRound } from '@lucide/vue'
 import { api, INTERVALS_SETTINGS_URL, SYNC_WINDOW_DAYS } from '@/api'
 import FloatingButton from '@/components/FloatingButton.vue'
 import PageCard from '@/components/PageCard.vue'
@@ -27,9 +28,9 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <FloatingButton side="left" to="/" label="Back">←</FloatingButton>
+  <FloatingButton side="left" to="/" label="Back"><ArrowLeft /></FloatingButton>
 
-  <PageCard icon="🔑" title="Connect intervals.icu" subtitle="Paste your intervals.icu API key to start tracking your season.">
+  <PageCard :icon="KeyRound" title="Connect intervals.icu" subtitle="Paste your intervals.icu API key to start tracking your season.">
     <form class="connect" @submit.prevent="submit">
       <label for="api-key">API key</label>
       <input

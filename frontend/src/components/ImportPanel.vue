@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Bulk import (Re-sync) of the athlete's intervals.icu activities: start it, and follow its progress while it runs.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { X } from '@lucide/vue'
 import { api, MAP_TRACKS_LIMIT, SYNC_WINDOW_DAYS, type ImportStatus } from '@/api'
 import { settings } from '@/settings'
 
@@ -87,7 +88,7 @@ const summary = computed(() => {
         {{ mapLimitWarning.toLocaleString() }} older {{ mapLimitWarning === 1 ? 'activity is' : 'activities are' }}
         still synced and count in your stats, but {{ mapLimitWarning === 1 ? "isn't" : "aren't" }} drawn on the map.
       </p>
-      <button type="button" class="dismiss" aria-label="Dismiss" @click="dismissMapLimit">✕</button>
+      <button type="button" class="dismiss" aria-label="Dismiss" @click="dismissMapLimit"><X :size="14" /></button>
     </div>
     <small v-if="error" class="failed">{{ error }}</small>
   </section>
@@ -139,11 +140,12 @@ small {
 
 .dismiss {
   flex: none;
+  display: inline-flex;
+  align-items: center;
   padding: 0 2px;
   border: none;
   background: none;
   color: #92400e;
-  font-size: 14px;
   cursor: pointer;
 }
 
