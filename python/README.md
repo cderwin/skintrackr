@@ -53,7 +53,7 @@ settings fail at startup (`ConfigError`).
 | `GET /healthcheck` | | `{"ok": true}` |
 | `POST /auth/connect` | | `{"api_key"}`: check the key with intervals.icu, store it encrypted, and sign the browser in (session cookie, 30 days): `{"athlete_id", "name"}` |
 | `POST /auth/logout` | | Revoke the browser's session token (if valid) and clear the cookie |
-| `POST /auth/disconnect` | bearer | Delete everything stored for the athlete (API key, archive, index, import), revoke the token and clear the cookie |
+| `POST /auth/disconnect` | bearer | Delete everything stored for the athlete (API key, archive, index, Strava export, import), revoke the token and clear the cookie |
 | `POST /token/new` | | `{"api_key"}`: connect like `/auth/connect`, but answer `{"access_token", "token_type": "Bearer", "athlete_id"}` (a JWT valid for 30 days, for scripts) |
 | `POST /token/verify` | bearer | The token's details |
 | `POST /token/revoke` | bearer | Revoke the token |
@@ -61,6 +61,7 @@ settings fail at startup (`ConfigError`).
 | `POST /api/activity/{id}/persist` | bearer | Archive and index the activity: `{"ok": true, "activityId": id}` |
 | `POST /api/import` | bearer | Start a bulk import (Re-sync) of the athlete's activities (202; no-op if one is running); answers with its status |
 | `GET /api/import` | bearer | Import progress: `{"state": "idle"\|"running"\|"done"\|"failed", "activities", "tracks_done", "tracks_total", "skipped", "map_tracks_omitted", "error"}` |
+| `POST /api/strava/import` | bearer | The body: the `activities.csv` of the athlete's Strava export (up to 50 MB). Matches it with their activities, which then show Strava's names and ids (see [Strava exports](#strava-exports)); replaces an earlier upload. `{"strava_activities", "activities", "matched"}`; 400 if it isn't one |
 | `GET /api/activities` | bearer | For the map: `{"activities": [ActivitySummary, ...] (in no particular order), "on_map": [id, ...] (the ids in its tracks, newest first), "map_tracks_omitted"}` |
 | `GET /api/tracks.pmtiles` | bearer | The athlete's map tracks (PMTiles), whole or by HTTP `Range` (206), with an `ETag`; 404 before the first build |
 | `POST /api/activities/export/preview` | bearer | `{"bbox": [w, s, e, n], "sports", "date_from", "date_to"}` (the map's filters): the map tracks that meet the area, `{"activity_ids": [...] (newest first), "limit"}` |
@@ -87,7 +88,7 @@ Activities are stored twice (`server/ingest.py`):
   GPX exports are built from these. Derived from the streams, for the map: `.../track.geojson.gz` (the
   simplified track, for activities with positions) and `athletes/{athlete}/tracks.pmtiles` (see [Map tracks](#map-tracks)).
 - **Redis index (derived, rebuildable):** `athlete:{id}:activities`, one compact `ActivitySummary` per activity
-  (type, local start date, elevation, distance, moving time, `icu_sync_date`). Stats read only this.
+  (type, UTC and local start dates, elevation, distance, moving time, `icu_sync_date`). Stats read only this.
 
 They get there three ways:
 
@@ -104,6 +105,22 @@ They get there three ways:
 
 intervals.icu doesn't serve activities synced to it from Strava through its API (it lists them as stubs with
 `source: STRAVA`); they're skipped and counted in the import's `skipped`.
+
+### Strava exports
+
+intervals.icu names activities after the device's sport and time of day ("Morning Hike"), and knows the Strava id
+of only its last ~90 days of activities. An athlete's Strava data export gives them their Strava names and ids
+(`strava.py`). The browser reads the export's zip and uploads only its `activities.csv` (one row per activity:
+`Activity ID`, `Activity Date` in UTC, `Activity Name`, ...); it's saved as uploaded, gzipped, at
+`athletes/{athlete}/strava/activities.csv.gz`.
+
+Each activity is paired with at most one of the export's: by the Strava id intervals.icu found for it, else by
+the closest UTC start (`start_date`) within 10 minutes (most are the same to the second; Strava's start moves when
+an activity is cropped there). The pairs are saved in `athlete:{id}:strava` (activity id → `{"strava_id",
+"name"}`), on upload and again from the saved upload after every import, which may bring activities the export
+has. Strava's names and ids replace intervals.icu's wherever activities are shown (`/api/activities`, GPX and
+CalTopo exports); the index keeps intervals.icu's, so syncs compare it with intervals.icu's list as before. Nothing
+is written to intervals.icu.
 
 ### Map tracks
 
@@ -149,7 +166,7 @@ settings from the environment and asks for confirmation unless given `--yes`.
 | --- | --- |
 | `intervals-reset` | The move to intervals.icu (2026-11): deletes everything in the bucket and every skintrackr key in Redis (keys matching `APP_KEY_PATTERNS`; other keys are left alone). Safe to re-run. |
 | `build-tracks [--athlete ID ...]` | The activity map (2026-11): writes `track.geojson.gz` for every archived activity from its streams, then builds each athlete's `tracks.pmtiles` (every connected athlete, or those given). Rewrites them all, so it's safe to re-run, e.g. after changing how tracks are simplified. Needs tippecanoe. |
-| `refresh-summaries [--athlete ID ...]` | Strava links (2026-11): rewrites each indexed activity's summary from intervals.icu's activity list where it differs, which fills in the new `strava_id` (intervals.icu matches activities with Strava's after they're archived, so the archive may lack it). One list request per athlete (every connected one, or those given); activities not yet indexed are left to imports and syncs. Safe to re-run. |
+| `refresh-summaries [--athlete ID ...]` | Strava links and exports (2026-11): rewrites each indexed activity's summary from intervals.icu's activity list where it differs, which fills in the new `strava_id` and `start_date` (UTC; Strava exports are matched by it). intervals.icu matches activities with Strava's after they're archived, so the archive may lack the Strava id. One list request per athlete (every connected one, or those given); activities not yet indexed are left to imports and syncs. Safe to re-run. |
 | `legacy-layout --athlete ID [--allow-missing]` | The move from the Go server's `activities/{athlete}/metadata/{id}.json` and `tracks/{id}.gpx` to the `athletes/` layout: deletes the former once every activity is in the latter. Since intervals.icu's ids differ, use `--allow-missing` (or `intervals-reset`). |
 
 ## Layout

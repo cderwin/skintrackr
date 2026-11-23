@@ -1,13 +1,14 @@
 <script setup lang="ts">
-// The map's settings, under its button: units (saved in this browser), re-syncing activities, signing out, and
-// disconnecting.
+// The map's settings, under its button: units (saved in this browser), re-syncing activities, Strava names (from
+// the athlete's Strava export), signing out, and disconnecting.
 import { ref } from 'vue'
 import { X } from '@lucide/vue'
 import { api, INTERVALS_SETTINGS_URL } from '@/api'
 import { settings, type Units } from '@/settings'
 import ImportPanel from '@/components/ImportPanel.vue'
+import StravaImport from '@/components/StravaImport.vue'
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; 'strava-imported': [] }>()
 
 const unitOptions: Units[] = ['ft', 'm']
 
@@ -67,6 +68,11 @@ async function disconnect(): Promise<void> {
       <div class="field">
         <span>Activities</span>
         <ImportPanel class="resync" />
+      </div>
+
+      <div class="field">
+        <span>Strava names</span>
+        <StravaImport @imported="emit('strava-imported')" />
       </div>
 
       <button class="small-button align-start" type="button" @click="signOut">Sign out</button>

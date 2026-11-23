@@ -139,7 +139,8 @@ def refresh_summaries_command(athlete_ids: tuple[str, ...]) -> None:
     """Rewrite each indexed activity's summary from intervals.icu's activity list, where it differs.
 
     Written for Strava links (2026-11): `strava_id` joined the index's summaries, and intervals.icu matches
-    activities with Strava's after they're archived, so it comes from the list rather than the archive. One list
+    activities with Strava's after they're archived, so it comes from the list rather than the archive. Run it
+    again for Strava exports (2026-11): `start_date` (UTC), which uploads are matched by, joined them too. One list
     request per athlete, paced like other background work; safe to re-run.
     """
     config = Config.from_env()

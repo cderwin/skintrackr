@@ -80,11 +80,12 @@ Route = Callable[[httpx.Request], httpx.Response]
 
 
 def summary(activity_id: str, day: str, vert: float = 1.0, type: str = "BackcountrySki", **fields: Any) -> dict[str, Any]:
-    """An activity as intervals.icu lists it, starting at 9am local time on `day` (YYYY-MM-DD)."""
+    """An activity as intervals.icu lists it, starting at 9am local time (UTC-8) on `day` (YYYY-MM-DD)."""
     return {
         **{key: ACTIVITY[key] for key in ("name", "distance", "moving_time", "source", "icu_sync_date")},
         "id": activity_id,
         "type": type,
+        "start_date": f"{day}T17:00:00Z",
         "start_date_local": f"{day}T09:00:00",
         "total_elevation_gain": vert,
         **fields,

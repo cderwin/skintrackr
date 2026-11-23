@@ -7,6 +7,7 @@ import pytest
 from skintrackr.clients.store import NotFoundError, Store
 from skintrackr.crypto import TokenClaims, decrypt
 from skintrackr.models import ActivitySummary, ImportStatus
+from skintrackr.strava import StravaMatch
 from tests.conftest import API_KEY, ATHLETE_ID, SECRET
 
 OTHER_ATHLETE = "i9999"
@@ -104,6 +105,29 @@ def test_activity_index(store: Store) -> None:
     asyncio.run(run())
 
 
+# --- Strava matches
+
+
+def test_strava_matches(store: Store) -> None:
+    first, second = StravaMatch(strava_id="1", name="Dawn patrol"), StravaMatch(strava_id="2", name="Tour")
+
+    async def run() -> None:
+        assert await store.strava_matches(ATHLETE_ID) == {}
+        await store.save_strava_matches(ATHLETE_ID, {"i1": first, "i2": second})
+        assert await store.strava_matches(ATHLETE_ID) == {"i1": first, "i2": second}
+        await store.save_strava_matches(ATHLETE_ID, {"i2": first})  # replaces them all
+        assert await store.strava_matches(ATHLETE_ID) == {"i2": first}
+        await store.save_activities(ATHLETE_ID, [ActivitySummary(id="i2")])
+        await store.delete_activity(ATHLETE_ID, "i2")  # deleting an activity deletes its match
+        assert await store.strava_matches(ATHLETE_ID) == {}
+        await store.save_strava_matches(ATHLETE_ID, {"i1": first})
+        await store.save_strava_matches(ATHLETE_ID, {})
+        assert await store.strava_matches(ATHLETE_ID) == {}
+        assert await store.strava_matches(OTHER_ATHLETE) == {}
+
+    asyncio.run(run())
+
+
 # --- imports
 
 
@@ -125,11 +149,13 @@ def test_delete_athlete(store: Store) -> None:
     async def run() -> None:
         await store.save_api_key(ATHLETE_ID, API_KEY)
         await store.save_activities(ATHLETE_ID, [ActivitySummary(id="i1")])
+        await store.save_strava_matches(ATHLETE_ID, {"i1": StravaMatch(strava_id="1")})
         await store.save_import(ATHLETE_ID, ImportStatus(state="running"))
         await store.save_api_key(OTHER_ATHLETE, "other-key")
 
         await store.delete_athlete(ATHLETE_ID)
         assert await store.activities(ATHLETE_ID) == []
+        assert await store.strava_matches(ATHLETE_ID) == {}
         assert await store.load_import(ATHLETE_ID) == ImportStatus()
         assert await store.running_imports() == []
         assert await store.connected_athletes() == [OTHER_ATHLETE]

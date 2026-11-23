@@ -35,9 +35,20 @@ export interface ImportStatus {
   error: string
 }
 
+/** How an upload of the athlete's Strava export matched their activities. */
+export interface StravaImport {
+  /** Activities in the export. */
+  strava_activities: number
+  /** The athlete's activities. */
+  activities: number
+  /** Their activities paired with one in the export (they show its name and Strava id). */
+  matched: number
+}
+
 /** One activity of the athlete's index. */
 export interface ActivitySummary {
   id: string
+  /** Its Strava name, if it matched one in the athlete's Strava export; else intervals.icu's. */
   name: string
   /** intervals.icu's activity type, e.g. `BackcountrySki`. */
   type: string
@@ -46,7 +57,7 @@ export interface ActivitySummary {
   total_elevation_gain: number
   distance: number
   moving_time: number
-  /** The activity on Strava, once intervals.icu has matched it with one; empty otherwise. */
+  /** The activity on Strava, once intervals.icu or the athlete's Strava export has matched it with one; else empty. */
   strava_id: string
 }
 
@@ -128,15 +139,15 @@ export function stravaActivityUrl(id: string): string {
   return `https://www.strava.com/activities/${encodeURIComponent(id)}`
 }
 
-/** A request to the server; signed-out answers and errors (`{"message"}`) are thrown. */
+/** A request to the server, with a JSON payload or a file; signed-out answers and errors (`{"message"}`) are thrown. */
 async function send(method: 'GET' | 'POST', path: string, payload?: unknown): Promise<Response> {
-  const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    ...(payload === undefined
+  const body =
+    payload === undefined
       ? {}
-      : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
-  })
+      : payload instanceof Blob
+        ? { headers: { 'Content-Type': payload.type || 'application/octet-stream' }, body: payload }
+        : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
+  const response = await fetch(path, { method, credentials: 'same-origin', ...body })
   if (response.status === 401 || response.status === 403) {
     throw new SignedOutError()
   }
@@ -184,6 +195,8 @@ export const api = {
   importStatus: () => call<ImportStatus>('GET', '/api/import'),
   startImport: () => call<ImportStatus>('POST', '/api/import'),
   activities: () => call<MapActivities>('GET', '/api/activities'),
+  /** Match the athlete's activities with their Strava export (its `activities.csv`), for their Strava names. */
+  stravaImport: (activitiesCsv: Blob) => call<StravaImport>('POST', '/api/strava/import', activitiesCsv),
   /** The tracks an export of an area would hold. */
   exportPreview: (request: TrackExportRequest) => call<ExportPreview>('POST', '/api/activities/export/preview', request),
   /** The tracks in an area, as a CalTopo GeoJSON file. */

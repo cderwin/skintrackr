@@ -9,6 +9,8 @@
   `sync_window`: new and changed ones are ingested, deleted ones removed. Older changes need a Re-sync. An
   activity that fails to ingest (after the background client's retries) is skipped, and retried by the next sync.
 - `refresh_summaries`: rewrites indexed summaries from intervals.icu's list (`migrate refresh-summaries`).
+- `match_strava`: pairs the athlete's activities with those in their Strava export (`skintrackr.strava`), which
+  give them their Strava names: when it's uploaded, and again after every import, from the saved upload.
 - `remove_activity` / `remove_athlete`: deleted activities, and disconnecting.
 - `schedule_tracks` / `build_tracks`: the athlete's map tracks (`tracks.pmtiles`), rebuilt in the background
   after their activities change, at most every `tracks_debounce`, from the `MAP_TRACKS_LIMIT` most recent tracks.
@@ -18,16 +20,18 @@ are skipped.
 """
 
 import asyncio
+import gzip
 from datetime import UTC, date, datetime
 
 from botocore.exceptions import ClientError
 
-from skintrackr.clients.blob_store import BlobStore, tracks_key
+from skintrackr.clients.blob_store import BlobStore, strava_export_key, tracks_key
 from skintrackr.clients.intervals import UNAVAILABLE_SOURCES, IntervalsClient, IntervalsError
 from skintrackr.clients.store import Store
 from skintrackr.logging import get_logger
-from skintrackr.models import ActivitySummary
+from skintrackr.models import ActivitySummary, converter
 from skintrackr.server.services import Services
+from skintrackr.strava import StravaImport, match_activities, parse_activities
 from skintrackr.tracks import PMTILES_MEDIA_TYPE, MapTracks, build_pmtiles, map_track_ids
 
 logger = get_logger(__name__)
@@ -142,6 +146,11 @@ async def run_import(services: Services, athlete_id: str) -> None:
                 status.activities -= 1
                 status.tracks_total -= 1
             await store.save_import(athlete_id, status)
+        try:
+            await match_strava(services, athlete_id)
+        except Exception as e:
+            # the import itself succeeded; the next import (or upload) matches again
+            logger.error("error matching the Strava export", exc_info=e, extra=context)
         status.map_tracks_omitted = (await select_map_tracks(store, services.blob_store, athlete_id)).omitted
         schedule_tracks(services, athlete_id)
         status.state = "done"
@@ -151,6 +160,39 @@ async def run_import(services: Services, athlete_id: str) -> None:
         status.state = "failed"
         status.error = RECONNECT_MESSAGE if isinstance(e, IntervalsError) and e.unauthorized else str(e)
     await store.save_import(athlete_id, status)
+
+
+# --- Strava exports
+
+
+async def match_strava(services: Services, athlete_id: str, export: bytes | None = None) -> StravaImport | None:
+    """Pair an athlete's activities with their Strava export's, and save the matches.
+
+    Args:
+        export: A new upload of the export's `activities.csv`, saved once it's read; None matches the saved one.
+
+    Returns:
+        How they matched; None if there's no export saved.
+
+    Raises:
+        StravaExportError: The upload isn't a Strava export's `activities.csv` (nothing is saved).
+        botocore.exceptions.ClientError: Reading or saving the export failed.
+    """
+    key = strava_export_key(athlete_id)
+    if export is None:
+        saved = await services.blob_store.get(key)
+        if saved is None:
+            return None
+        strava = await asyncio.to_thread(lambda: parse_activities(gzip.decompress(saved)))
+    else:
+        strava = await asyncio.to_thread(parse_activities, export)
+        await services.blob_store.put(key, gzip.compress(export), "text/csv", "gzip")
+    summaries = await services.store.activities(athlete_id)
+    matches = match_activities(summaries, strava)
+    await services.store.save_strava_matches(athlete_id, matches)
+    result = StravaImport(strava_activities=len(strava), activities=len(summaries), matched=len(matches))
+    logger.info("matched Strava export", extra={"athlete_id": athlete_id, **converter.unstructure(result)})
+    return result
 
 
 # --- map tracks

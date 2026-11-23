@@ -7,6 +7,7 @@
 | `jwt:jti:{jti}` | hash of `athlete_id`, `issued_at`, `expires_at`; expires with the token |
 | `jwt:revoked:{jti}` | revocation time; expires with the token |
 | `athlete:{id}:activities` | hash of activity id -> `ActivitySummary` JSON (rebuildable from the bucket) |
+| `athlete:{id}:strava` | hash of activity id -> `StravaMatch` JSON, from the athlete's Strava export (rebuildable from the bucket) |
 | `athlete:{id}:import` | `ImportStatus` JSON |
 | `imports:running` | set of athlete ids with an import running (resumed at startup) |
 """
@@ -21,6 +22,7 @@ from redis.typing import EncodableT, FieldT
 from skintrackr.crypto import TokenClaims, decrypt, encrypt
 from skintrackr.logging import get_logger
 from skintrackr.models import ActivitySummary, ImportStatus, converter, loads
+from skintrackr.strava import StravaMatch
 
 logger = get_logger(__name__)
 
@@ -43,6 +45,10 @@ def _api_key_key(athlete_id: str) -> str:
 
 def _activities_key(athlete_id: str) -> str:
     return f"athlete:{athlete_id}:activities"
+
+
+def _strava_key(athlete_id: str) -> str:
+    return f"athlete:{athlete_id}:strava"
 
 
 def _import_key(athlete_id: str) -> str:
@@ -148,8 +154,27 @@ class Store:
         return [loads(row, ActivitySummary) for row in rows]
 
     async def delete_activity(self, athlete_id: str, activity_id: str) -> None:
-        """Remove an activity from an athlete's index."""
-        await self.redis.hdel(_activities_key(athlete_id), activity_id)
+        """Remove an activity from an athlete's index, and its Strava match."""
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.hdel(_activities_key(athlete_id), activity_id)
+            pipe.hdel(_strava_key(athlete_id), activity_id)
+            await pipe.execute()
+
+    # --- Strava matches
+
+    async def save_strava_matches(self, athlete_id: str, matches: dict[str, StravaMatch]) -> None:
+        """Replace an athlete's Strava matches (activity id -> match)."""
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.delete(_strava_key(athlete_id))
+            if matches:
+                mapping: dict[FieldT, EncodableT] = {k: converter.dumps(m) for k, m in matches.items()}
+                pipe.hset(_strava_key(athlete_id), mapping=mapping)
+            await pipe.execute()
+
+    async def strava_matches(self, athlete_id: str) -> dict[str, StravaMatch]:
+        """An athlete's Strava matches, by activity id."""
+        rows = await self.redis.hgetall(_strava_key(athlete_id))
+        return {_text(k): loads(v, StravaMatch) for k, v in rows.items()}
 
     # --- imports
 
@@ -176,9 +201,11 @@ class Store:
     # --- athletes
 
     async def delete_athlete(self, athlete_id: str) -> None:
-        """Forget an athlete: their API key, activity index and import progress."""
+        """Forget an athlete: their API key, activity index, Strava matches and import progress."""
         async with self.redis.pipeline(transaction=True) as pipe:
-            pipe.delete(_api_key_key(athlete_id), _activities_key(athlete_id), _import_key(athlete_id))
+            pipe.delete(
+                _api_key_key(athlete_id), _activities_key(athlete_id), _strava_key(athlete_id), _import_key(athlete_id)
+            )
             pipe.srem(CONNECTED_KEY, athlete_id)
             pipe.srem(RUNNING_IMPORTS_KEY, athlete_id)
             await pipe.execute()

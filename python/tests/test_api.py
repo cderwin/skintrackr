@@ -2,15 +2,17 @@ import json
 import shutil
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fakeredis import FakeServer
 from litestar.testing import TestClient
 
-from skintrackr.clients.blob_store import archive_keys, tracks_key
+from skintrackr.clients.blob_store import archive_keys, strava_export_key, tracks_key
 from skintrackr.crypto import generate_jwt
 from skintrackr.models import ActivitySummary, Stream, loads
+from skintrackr.strava import StravaMatch
 from skintrackr.tracks import track_feature
 from tests.conftest import (
     ACTIVITY,
@@ -40,17 +42,20 @@ VERT = "/api/stats/vert"
 IMPORT = "/api/import"
 ACTIVITIES = "/api/activities"
 TRACKS = "/api/tracks.pmtiles"
+STRAVA_IMPORT = "/api/strava/import"
+# Strava activities 9001 (Jan 15, 2024, 8:30:00 AM UTC, "Dawn patrol"), 9002 and 9003
+STRAVA_EXPORT = (Path(__file__).parent / "fixtures" / "strava-activities.csv").read_bytes()
 KEYS = archive_keys(ATHLETE_ID, ACTIVITY_ID)
 
 
 def request(client: TestClient, path: str, headers: dict[str, str] | None = None):
-    return client.post(path, headers=headers) if path in (PERSIST, IMPORT) else client.get(path, headers=headers)
+    return client.post(path, headers=headers) if path in (PERSIST, IMPORT, STRAVA_IMPORT) else client.get(path, headers=headers)
 
 
 # --- authentication (shared by all routes)
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, STRAVA_IMPORT, ACTIVITIES, TRACKS])
 @pytest.mark.parametrize(
     ("headers", "status", "message"),
     [
@@ -67,19 +72,19 @@ def test_requires_valid_token(
     assert intervals.requests == []
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, STRAVA_IMPORT, ACTIVITIES, TRACKS])
 def test_rejects_expired_token(client: TestClient, path: str) -> None:
     token, _ = generate_jwt(ATHLETE_ID, SECRET, timedelta(hours=1), now=time.time() - 7200)
     assert request(client, path, bearer(token)).status_code == 403
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, STRAVA_IMPORT, ACTIVITIES, TRACKS])
 def test_rejects_token_signed_with_another_secret(client: TestClient, path: str) -> None:
     token, _ = generate_jwt(ATHLETE_ID, "f" * 64, timedelta(hours=1))
     assert request(client, path, bearer(token)).status_code == 403
 
 
-@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, ACTIVITIES, TRACKS])
+@pytest.mark.parametrize("path", [EXPORT, PERSIST, VERT, IMPORT, STRAVA_IMPORT, ACTIVITIES, TRACKS])
 def test_rejects_revoked_token(client: TestClient, redis_server: FakeServer, path: str) -> None:
     token = issue_api_token(redis_server)
     assert client.post("/token/revoke", headers=bearer(token)).status_code == 200
@@ -141,6 +146,15 @@ def test_export_from_archive(client: TestClient, intervals: FakeIntervals, bucke
     assert b"<name>Morning Skin</name>" in response.content
     assert b"<ele>57</ele>" in response.content
     assert intervals.requests == []  # no key needed, nothing fetched
+
+
+def test_export_uses_the_strava_name(client: TestClient, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    bucket.put_json(KEYS.activity, ACTIVITY)
+    bucket.put_json(KEYS.streams, STREAMS)
+    match = StravaMatch(strava_id="9001", name="Dawn patrol")
+    with_store(redis_server, lambda s: s.save_strava_matches(ATHLETE_ID, {ACTIVITY_ID: match}))
+    response = client.get(EXPORT, headers=bearer(issue_api_token(redis_server)))
+    assert b"<name>Dawn patrol</name>" in response.content
 
 
 def test_export_invalid_activity_id(client: TestClient, redis_server: FakeServer) -> None:
@@ -249,6 +263,43 @@ def test_activities(client: TestClient, bucket: FakeBucket, redis_server: FakeSe
     assert sorted(a["id"] for a in body["activities"]) == ["i1", "i2", "i3"]
     assert next(a for a in body["activities"] if a["id"] == "i1")["name"] == "Skin"
     assert (body["on_map"], body["map_tracks_omitted"]) == (["i2", "i1"], 0)
+
+
+def test_activities_show_strava_names_and_ids(client: TestClient, redis_server: FakeServer) -> None:
+    rows = [
+        ActivitySummary(id="i1", name="Morning Skin", start_date="2024-01-15T08:30:00Z"),
+        ActivitySummary(id="i2", name="Afternoon Run", start_date="2024-03-01T08:00:00Z"),
+    ]
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, rows))
+    token = issue_api_token(redis_server)
+
+    response = client.post(STRAVA_IMPORT, content=STRAVA_EXPORT, headers={**session(token), "Content-Type": "text/csv"})
+
+    assert (response.status_code, response.json()) == (200, {"strava_activities": 3, "activities": 2, "matched": 1})
+    body = client.get(ACTIVITIES, headers=session(token)).json()
+    shown = {a["id"]: (a["name"], a["strava_id"]) for a in body["activities"]}
+    assert shown == {"i1": ("Dawn patrol", "9001"), "i2": ("Afternoon Run", "")}
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (b"", "This isn't a Strava export's activities.csv (it has no Activity ID, Activity Date and Activity Name columns)."),
+        (b"PK\x03\x04\xff\xfe", "This isn't a Strava export's activities.csv (it isn't text)."),
+    ],
+)
+def test_strava_import_rejects_what_isnt_an_export(
+    client: TestClient, bucket: FakeBucket, redis_server: FakeServer, body: bytes, message: str
+) -> None:
+    response = client.post(STRAVA_IMPORT, content=body, headers=bearer(issue_api_token(redis_server)))
+    assert (response.status_code, response.json()) == (400, {"message": message})
+    assert strava_export_key(ATHLETE_ID) not in bucket.keys()
+
+
+def test_strava_import_upload_failure(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    bucket.fail_writes()
+    response = client.post(STRAVA_IMPORT, content=STRAVA_EXPORT, headers=bearer(issue_api_token(redis_server)))
+    assert (response.status_code, response.json()) == (500, {"message": "failed to import Strava export"})
 
 
 def test_tracks_before_any_build(client: TestClient, redis_server: FakeServer) -> None:
@@ -392,6 +443,17 @@ def test_export_area_clip(client: TestClient, bucket: FakeBucket, redis_server: 
     leaving = lines[1]["geometry"]["coordinates"]
     # i2 from its start to the area's north edge: 20 fixes inside, then a point on the edge
     assert len(leaving) == 21 and leaving[-1][1] == pytest.approx(SOUTH + 0.01)
+
+
+@requires_tippecanoe
+def test_export_area_uses_strava_names_and_ids(client: TestClient, bucket: FakeBucket, redis_server: FakeServer) -> None:
+    archive_tours(bucket, redis_server)
+    match = StravaMatch(strava_id="9001", name="Dawn patrol")
+    with_store(redis_server, lambda s: s.save_strava_matches(ATHLETE_ID, {"i1": match}))
+    response = client.post(EXPORT_AREA, json=export_body(sports=["BackcountrySki"]), headers=bearer(issue_api_token(redis_server)))
+    _, first, second = response.json()["features"]
+    assert (first["properties"]["title"], second["properties"]["title"]) == ("2025-01-10 Dawn patrol", "2025-02-20 Tour i2")
+    assert "https://www.strava.com/activities/9001" in first["properties"]["description"]
 
 
 @requires_tippecanoe
