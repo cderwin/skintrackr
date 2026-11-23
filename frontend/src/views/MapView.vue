@@ -451,7 +451,7 @@ onBeforeUnmount(() => {
   <template v-if="signedIn">
     <FloatingButton side="left" label="Settings" @click="showSettings = true"><Settings /></FloatingButton>
     <FloatingButton side="left" :offset="1" label="Season stats" @click="openStats"><ChartLine /></FloatingButton>
-    <SettingsPanel v-if="showSettings" @close="showSettings = false" />
+    <SettingsPanel v-if="showSettings" @close="showSettings = false" @strava-imported="loadActivities" />
     <StatsModal v-if="showStats" @close="closeStats" />
   </template>
   <Teleport v-if="candidates.length" :to="popupContent">

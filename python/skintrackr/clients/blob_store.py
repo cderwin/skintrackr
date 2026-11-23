@@ -6,6 +6,7 @@ Layout (the bucket is the source of truth; the Redis activity index is derived f
     athletes/{athlete}/activities/{activity}/streams.json.gz    intervals.icu's streams JSON, every type recorded
     athletes/{athlete}/activities/{activity}/track.geojson.gz   the simplified track (`tracks.track_feature`), if any
     athletes/{athlete}/tracks.pmtiles                           the map's vector tiles of the athlete's tracks
+    athletes/{athlete}/strava/activities.csv.gz                 the `activities.csv` of their Strava export, as uploaded
 
 The track and the archive are derived from the streams, so they can be rebuilt (`skintrackr migrate build-tracks`).
 
@@ -81,6 +82,11 @@ def archive_keys(athlete_id: str, activity_id: str) -> ArchiveKeys:
 def tracks_key(athlete_id: str) -> str:
     """The athlete's map tiles (PMTiles)."""
     return f"{athlete_prefix(athlete_id)}tracks.pmtiles"
+
+
+def strava_export_key(athlete_id: str) -> str:
+    """The `activities.csv` of the athlete's Strava export (`skintrackr.strava`)."""
+    return f"{athlete_prefix(athlete_id)}strava/activities.csv.gz"
 
 
 def _activity_file_pattern(athlete_id: str, name: str) -> re.Pattern[str]:

@@ -65,6 +65,9 @@ class ActivitySummary:
     id: str = ""
     name: str = ""
     type: str = ""
+    # the start in UTC (e.g. `2024-01-15T08:30:00Z`), which Strava exports match by; empty in rows indexed before
+    # it was added, until `migrate refresh-summaries`
+    start_date: str = ""
     start_date_local: str = ""
     total_elevation_gain: float = 0.0
     distance: float = 0.0

@@ -1,5 +1,9 @@
-"""Authenticated activity API: GPX export, archiving, bulk imports, vert stats, the map's activities and tracks, and
-CalTopo exports of an area's tracks."""
+"""Authenticated activity API: GPX export, archiving, bulk imports, Strava exports, vert stats, the map's activities
+and tracks, and CalTopo exports of an area's tracks.
+
+Activities matched in the athlete's Strava export show Strava's names and ids (`apply_matches`); the index itself
+keeps intervals.icu's, which the sync compares with intervals.icu's list.
+"""
 
 import asyncio
 import re
@@ -22,8 +26,9 @@ from skintrackr.logging import get_logger
 from skintrackr.models import ActivitySummary, ExportPreview, TrackExportRequest, converter, loads
 from skintrackr.server.auth import authenticate_request
 from skintrackr.server.errors import fail_with
-from skintrackr.server.ingest import ingest_activity, start_import
+from skintrackr.server.ingest import ingest_activity, match_strava, start_import
 from skintrackr.server.services import Services, get_services
+from skintrackr.strava import StravaExportError, apply_matches
 from skintrackr.tracks import (
     EXPORT_POINTS_LIMIT,
     EXPORT_READ_CONCURRENCY,
@@ -48,6 +53,8 @@ EXPORT_UNITS = ("ft", "m")
 MAX_FOLDER_NAME = 100
 MAX_STROKE_WIDTH = 20
 NO_TRACKS = "No tracks in this area match the map's filters."
+# a Strava export's activities.csv is about 600 bytes an activity
+MAX_STRAVA_EXPORT_BYTES = 50_000_000
 # intervals.icu activity ids look like `i123456789`
 ACTIVITY_ID = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -67,8 +74,12 @@ async def export_track(request: Request, state: State, activity_id: FromPath[str
 
     with fail_with("failed to read archived activity", **context):
         archived = await services.blob_store.read_activity(info.athlete_id, _activity_id(activity_id))
+    with fail_with("failed to load Strava matches", **context):
+        match = (await services.store.strava_matches(info.athlete_id)).get(activity_id)
     if archived is not None:
         activity, streams = archived
+        if match and match.name:
+            activity.name = match.name
         with fail_with("failed to export activity", **context):
             track = activity_gpx(activity, merge_streams(streams, skip_unknown=True))
     else:
@@ -76,6 +87,8 @@ async def export_track(request: Request, state: State, activity_id: FromPath[str
             intervals = await services.intervals_for(info.athlete_id)
         with fail_with("failed to fetch activity", **context):
             activity = await intervals.get_activity(activity_id)
+        if match and match.name:
+            activity.name = match.name
         with fail_with("failed to export activity", **context):
             track = await intervals.export_activity_gpx(activity)
 
@@ -123,6 +136,21 @@ async def import_status(request: Request, state: State) -> dict[str, Any]:
     return converter.unstructure(status)
 
 
+@post("/api/strava/import", status_code=200, request_max_body_size=MAX_STRAVA_EXPORT_BYTES)
+async def strava_import(request: Request, state: State) -> dict[str, Any]:
+    """Match the athlete's activities with their Strava export (the body: its `activities.csv`), which then give
+    them their Strava names and ids; replaces an earlier upload. Answers with how they matched."""
+    services = get_services(state)
+    info = await authenticate_request(request, services)
+    export = await request.body()
+    with fail_with("failed to import Strava export", athlete_id=info.athlete_id):
+        try:
+            result = await match_strava(services, info.athlete_id, export)
+        except StravaExportError as e:
+            raise ClientException(str(e)) from e
+    return converter.unstructure(result)
+
+
 @get("/api/stats/vert")
 async def vert_stats(request: Request, state: State, today: FromQuery[date | None] = None) -> dict[str, Any]:
     """The athlete's on-foot vert from Jan 1 to today's date, this year and in previous years, from their index.
@@ -150,6 +178,7 @@ async def list_activities(request: Request, state: State) -> dict[str, Any]:
     with fail_with("failed to load activities", athlete_id=info.athlete_id):
         activities = await services.store.activities(info.athlete_id)
         tracks = map_track_ids(activities, await services.blob_store.track_activity_ids(info.athlete_id))
+        activities = apply_matches(activities, await services.store.strava_matches(info.athlete_id))
     return {
         "activities": converter.unstructure(activities),
         "on_map": tracks.included,
@@ -250,7 +279,8 @@ async def export_tracks(request: Request, state: State) -> Response[bytes]:
         ids = export.activity_ids
         if ids is None:
             ids = await export_candidates(services, info.athlete_id, export, bbox)
-        index = {a.id: a for a in await services.store.activities(info.athlete_id)}
+        activities = await services.store.activities(info.athlete_id)
+        index = {a.id: a for a in apply_matches(activities, await services.store.strava_matches(info.athlete_id))}
     if not ids:
         raise ClientException(NO_TRACKS)
     if len(ids) > EXPORT_TRACKS_LIMIT:
@@ -324,6 +354,7 @@ api_handlers = [
     persist_activity,
     import_start,
     import_status,
+    strava_import,
     vert_stats,
     list_activities,
     map_tracks,

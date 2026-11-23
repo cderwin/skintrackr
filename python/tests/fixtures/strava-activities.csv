@@ -1,0 +1,5 @@
+Activity ID,Activity Date,Activity Name,Activity Type,Activity Description,Elapsed Time,Distance,Max Heart Rate,Relative Effort,Commute,Activity Private Note,Activity Gear,Filename,Elapsed Time,Moving Time,Distance,Elevation Gain
+9001,"Jan 15, 2024, 8:30:00 AM",Dawn patrol,Backcountry Ski,"Deep, cold snow",3600,6.5,150.0,40,false,,,activities/123.fit.gz,3600.0,3000.0,6500.0,800.0
+9002,"Jan 16, 2024, 5:02:10 PM","Tour, with a comma",Backcountry Ski,"Two lines:
+""quoted"" too",7200,9.0,,,false,,,activities/124.fit.gz,7200.0,6000.0,9000.0,1200.0
+9003,"Feb 1, 2024, 12:00:00 PM",Lift laps,Alpine Ski,,1800,3.0,,,false,,,,1800.0,1700.0,3000.0,0.0

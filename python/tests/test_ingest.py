@@ -1,20 +1,23 @@
 import asyncio
 import functools
+import gzip
 import json
 import logging
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fakeredis import FakeServer
 
-from skintrackr.clients.blob_store import archive_keys, tracks_key
+from skintrackr.clients.blob_store import archive_keys, strava_export_key, tracks_key
 from skintrackr.clients.intervals import IntervalsError
 from skintrackr.config import Config
 from skintrackr.models import ActivitySummary, ImportStatus, loads
 from skintrackr.server.ingest import (
     RECONNECT_MESSAGE,
     build_tracks,
+    match_strava,
     remove_athlete,
     resume_imports,
     run_import,
@@ -23,6 +26,7 @@ from skintrackr.server.ingest import (
     sync_all,
     sync_athlete,
 )
+from skintrackr.strava import StravaExportError, StravaImport, StravaMatch
 from skintrackr.tracks import TrackBuildError, map_track_ids
 from tests.conftest import (
     ACTIVITY,
@@ -36,6 +40,8 @@ from tests.conftest import (
 )
 
 TODAY = date(2026, 11, 14)
+# Strava activities 9001 (Jan 15, 2024, 8:30:00 AM UTC), 9002 and 9003
+STRAVA_EXPORT = (Path(__file__).parent / "fixtures" / "strava-activities.csv").read_bytes()
 
 
 def activity(activity_id: str, day: str = "2026-01-02", **fields: Any) -> dict[str, Any]:
@@ -387,3 +393,99 @@ def test_import_over_the_map_limit_records_omitted_tracks(
 def test_import_status_from_before_the_map_limit() -> None:
     status = loads('{"state": "done", "activities": 3, "updated_at": 1}', ImportStatus)
     assert (status.state, status.map_tracks_omitted) == ("done", 0)
+
+
+# --- Strava exports
+
+
+def strava_matches(redis_server: FakeServer) -> dict[str, StravaMatch]:
+    return with_store(redis_server, lambda s: s.strava_matches(ATHLETE_ID))
+
+
+def test_match_strava_saves_the_upload_and_its_matches(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    rows = [
+        ActivitySummary(id="i1", name="Morning Skin", start_date="2024-01-15T08:30:00Z"),
+        ActivitySummary(id="i2", start_date="2024-01-16T17:04:00Z"),  # 2 minutes off
+        ActivitySummary(id="i3", start_date="2024-03-01T08:00:00Z"),  # not on Strava
+    ]
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, rows))
+    services = make_services(config, intervals, bucket, redis_server)
+
+    result = asyncio.run(match_strava(services, ATHLETE_ID, STRAVA_EXPORT))
+
+    assert result == StravaImport(strava_activities=3, activities=3, matched=2)
+    assert strava_matches(redis_server) == {
+        "i1": StravaMatch(strava_id="9001", name="Dawn patrol"),
+        "i2": StravaMatch(strava_id="9002", name="Tour, with a comma"),
+    }
+    assert bucket.read(strava_export_key(ATHLETE_ID)) == STRAVA_EXPORT
+    assert indexed(redis_server)["i1"].name == "Morning Skin"  # the index keeps intervals.icu's names
+
+
+def test_match_strava_without_an_upload_matches_the_saved_one(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    services = make_services(config, intervals, bucket, redis_server)
+    assert asyncio.run(match_strava(services, ATHLETE_ID)) is None  # none saved
+
+    bucket.put(strava_export_key(ATHLETE_ID), gzip.compress(STRAVA_EXPORT))
+    row = ActivitySummary(id="i1", start_date="2024-01-15T08:30:00Z")
+    with_store(redis_server, lambda s: s.save_activities(ATHLETE_ID, [row]))
+    assert asyncio.run(match_strava(services, ATHLETE_ID)) == StravaImport(strava_activities=3, activities=1, matched=1)
+
+
+def test_match_strava_rejects_an_invalid_upload_and_keeps_the_saved_one(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    bucket.put(strava_export_key(ATHLETE_ID), gzip.compress(STRAVA_EXPORT))
+    matches = {"i1": StravaMatch(strava_id="9001", name="Dawn patrol")}
+    with_store(redis_server, lambda s: s.save_strava_matches(ATHLETE_ID, matches))
+    services = make_services(config, intervals, bucket, redis_server)
+
+    with pytest.raises(StravaExportError):
+        asyncio.run(match_strava(services, ATHLETE_ID, b"not,a,strava,export\n"))
+
+    assert bucket.read(strava_export_key(ATHLETE_ID)) == STRAVA_EXPORT
+    assert strava_matches(redis_server) == matches
+
+
+@pytest.mark.usefixtures("connected")
+def test_import_matches_the_saved_strava_export(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    # uploaded before these activities were imported
+    bucket.put(strava_export_key(ATHLETE_ID), gzip.compress(STRAVA_EXPORT))
+    skin, other = activity("i1", "2024-01-15", start_date="2024-01-15T08:30:00Z"), activity("i2", "2024-03-01")
+    intervals.add_activities([skin, other])
+    for item in (skin, other):
+        intervals.add_activity(item)
+
+    asyncio.run(run_import(make_services(config, intervals, bucket, redis_server), ATHLETE_ID))
+
+    assert import_status(redis_server).state == "done"
+    assert strava_matches(redis_server) == {"i1": StravaMatch(strava_id="9001", name="Dawn patrol")}
+
+
+@pytest.mark.usefixtures("connected")
+def test_import_finishes_when_the_saved_strava_export_cant_be_read(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    bucket.put(strava_export_key(ATHLETE_ID), b"not gzip")
+    intervals.add_activities([])
+
+    asyncio.run(run_import(make_services(config, intervals, bucket, redis_server), ATHLETE_ID))
+
+    assert import_status(redis_server).state == "done"
+
+
+def test_remove_athlete_deletes_the_strava_export(
+    config: Config, intervals: FakeIntervals, bucket: FakeBucket, redis_server: FakeServer
+) -> None:
+    services = make_services(config, intervals, bucket, redis_server)
+    asyncio.run(match_strava(services, ATHLETE_ID, STRAVA_EXPORT))
+
+    asyncio.run(remove_athlete(services, ATHLETE_ID))
+
+    assert strava_export_key(ATHLETE_ID) not in bucket.keys()
